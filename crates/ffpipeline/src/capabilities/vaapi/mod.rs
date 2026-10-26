@@ -171,6 +171,11 @@ impl VaapiCapabilities {
         self.vendor.starts_with("Intel iHD driver")
     }
 
+    /// Rendering into the mapped NV12 surface (ETV FFmpeg patch 0023) is validated only with iHD.
+    pub fn can_render_nv12_directly(&self) -> bool {
+        self.vendor.starts_with("Intel iHD driver")
+    }
+
     /// cl_intel_va_api_media_sharing needs an Intel VA display
     pub fn can_map_to_opencl(&self) -> bool {
         self.vendor.starts_with("Intel")

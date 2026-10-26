@@ -10,7 +10,7 @@ use crate::frame_rate::FrameRate;
 use crate::frame_size::FrameSize;
 use crate::input::{PeriodicClock, PeriodicTiming, WatermarkTiming};
 use crate::output_settings::{BwdifOptions, ScalingMode, W3fdifOptions, YadifOptions};
-use crate::pipeline::{FrameState, FrameSurface, HdrFormat, PixelFormat};
+use crate::pipeline::{EnvironmentVariable, FrameState, FrameSurface, HdrFormat, PixelFormat};
 
 #[derive(Debug, Clone, Default)]
 pub struct SoftwareDeinterlaceOptions {
@@ -39,6 +39,10 @@ pub trait VideoFilterOp {
     /// A surface used only inside the filter. Its device must still be initialized.
     fn internal_surface(&self) -> Option<FrameSurface> {
         None
+    }
+    /// Environment the filter needs in the ffmpeg process.
+    fn envs(&self) -> Vec<EnvironmentVariable> {
+        Vec::new()
     }
 }
 

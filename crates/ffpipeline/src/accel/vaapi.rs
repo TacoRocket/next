@@ -68,6 +68,13 @@ impl Vaapi {
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::LibPlacebo)
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVulkan)
     }
+
+    /// The build implements the single-pass NV12 output (libplacebo `nv12_output`, ETV FFmpeg
+    /// patches 0023/0024) and the hardware is where it was validated.
+    fn can_libplacebo_render_nv12(&self, ffmpeg_info: &FfmpegInfo) -> bool {
+        ffmpeg_info.has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output")
+            && self.capabilities.can_render_nv12_directly()
+    }
 }
 
 impl HwAccel for Vaapi {
@@ -138,6 +145,7 @@ impl HwAccel for Vaapi {
             }) if self.can_libplacebo_tonemap(ffmpeg_info, format) => LibplaceboVaapi {
                 algorithm: filter_options.libplacebo.tonemapping.clone(),
                 pad: None,
+                render_nv12: self.can_libplacebo_render_nv12(ffmpeg_info),
             }
             .into(),
 
@@ -547,12 +555,15 @@ impl VideoFilterOp for TonemapVaapi {
     }
 }
 
-/// libplacebo cannot render to the mapped nv12 surface, so it writes rgba for scale_vulkan.
-/// Vulkan cannot import a frame mapped directly from VAAPI, so the input goes through DRM_PRIME.
+/// Stock libplacebo cannot render to the mapped nv12 surface, so it writes rgba for scale_vulkan.
+/// With `render_nv12`, it writes the mapped nv12 surface in one pass with the same output
+/// (`nv12_output=match`). Vulkan cannot import a frame mapped directly from VAAPI, so the input
+/// goes through DRM_PRIME.
 #[derive(Debug, Clone)]
 pub struct LibplaceboVaapi {
     pub(crate) algorithm: Option<String>,
     pub(crate) pad: Option<LibplaceboPad>,
+    pub(crate) render_nv12: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -601,10 +612,26 @@ impl VideoFilterOp for LibplaceboVaapi {
             Some(pad) => (pad.as_options(), ",setsar=1"),
             None => (String::new(), ""),
         };
+        let output = if self.render_nv12 {
+            "format=nv12:range=tv:nv12_output=match"
+        } else {
+            "format=rgba,scale_vulkan=format=nv12:out_range=limited"
+        };
         Some(format!(
-            "hwmap=derive_device=drm,format=drm_prime,libplacebo={pad}tonemapping={}:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=rgba,scale_vulkan=format=nv12:out_range=limited,hwmap=derive_device=vaapi:reverse=1,format=vaapi{setsar}",
+            "hwmap=derive_device=drm,format=drm_prime,libplacebo={pad}tonemapping={}:colorspace=bt709:color_primaries=bt709:color_trc=bt709:{output},hwmap=derive_device=vaapi:reverse=1,format=vaapi{setsar}",
             self.algorithm.as_deref().unwrap_or("linear"),
         ))
+    }
+
+    fn envs(&self) -> Vec<EnvironmentVariable> {
+        if !self.render_nv12 {
+            return Vec::new();
+        }
+        // ETV FFmpeg patch 0023: import the mapped nv12 surface as a writable render target
+        vec![EnvironmentVariable {
+            key: String::from("ETV_VAAPI_DIRECT_NV12"),
+            value: String::from("1"),
+        }]
     }
 }
 

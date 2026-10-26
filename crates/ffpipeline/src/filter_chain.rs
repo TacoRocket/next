@@ -929,6 +929,7 @@ mod tests {
     use crate::input::{PeriodicClock, PeriodicTiming, WatermarkTiming};
     use crate::output_settings::ScalingMode;
     use crate::overlay_filter::{OverlayFilter, OverlaySource, SoftwareOverlay};
+    use crate::pipeline::EnvironmentVariable;
     use crate::pipeline::{HdrFormat, HwPixelFormat, VideoFormat};
     use crate::video_filter::{
         FadeFilter, FormatFilter, HwMapFilter, HwUploadFilter, LoopFilter, PadFilter, ScaleFilter,
@@ -1979,6 +1980,143 @@ mod tests {
                 "vk"
             ]
         );
+    }
+
+    fn ffmpeg_info_with_libplacebo_nv12_output() -> FfmpegInfo {
+        FfmpegInfo {
+            video_filter_options: HashMap::from([(
+                KnownVideoFilter::LibPlacebo.to_string(),
+                HashSet::from([String::from("nv12_output")]),
+            )]),
+            ..ffmpeg_info_with_libplacebo()
+        }
+    }
+
+    fn resolve_libplacebo_with(
+        vaapi: Vaapi,
+        ffmpeg_info: &FfmpegInfo,
+        filters: Vec<VideoFilter>,
+        size: FrameSize,
+    ) -> (Vec<String>, Vec<EnvironmentVariable>) {
+        let mut chain = FilterChain::new(filters.into_iter().map(PipelineFilter::Video).collect());
+        chain.resolve(
+            ffmpeg_info,
+            &Some(HardwareAccel::Vaapi(vaapi)),
+            &VideoFilterOptions::default(),
+            &FrameState {
+                size,
+                ..hdr_vaapi_state()
+            },
+            &EncoderTarget {
+                surface: FrameSurface::Vaapi,
+                pixel_format: Some(PixelFormat::Nv12),
+                also_accepts: Vec::new(),
+            },
+        );
+        let video: Vec<&VideoFilter> = chain
+            .filters
+            .iter()
+            .filter_map(|f| match f {
+                PipelineFilter::Video(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        (
+            video.iter().filter_map(|v| v.as_arg()).collect(),
+            video.iter().flat_map(|v| v.envs()).collect(),
+        )
+    }
+
+    fn uhd() -> FrameSize {
+        FrameSize {
+            width: 3840,
+            height: 2160,
+        }
+    }
+
+    #[test]
+    fn resolve_libplacebo_on_vaapi_renders_nv12_when_build_and_driver_support_it() {
+        let (args, envs) = resolve_libplacebo_with(
+            vaapi_accel_with_libplacebo(true),
+            &ffmpeg_info_with_libplacebo_nv12_output(),
+            vec![libplacebo_tonemap(PixelFormat::Yuv420p)],
+            uhd(),
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(
+            args[0].starts_with("hwmap=derive_device=drm,format=drm_prime,libplacebo=tonemapping=")
+                && args[0].ends_with(
+                    ":format=nv12:range=tv:nv12_output=match,hwmap=derive_device=vaapi:reverse=1,format=vaapi"
+                )
+                && !args[0].contains("scale_vulkan"),
+            "{args:?}"
+        );
+        assert_eq!(envs.len(), 1, "{envs:?}");
+        assert_eq!(envs[0].key, "ETV_VAAPI_DIRECT_NV12");
+        assert_eq!(envs[0].value, "1");
+    }
+
+    #[test]
+    fn resolve_libplacebo_on_vaapi_keeps_rgba_without_nv12_output_option() {
+        let (args, envs) = resolve_libplacebo_with(
+            vaapi_accel_with_libplacebo(true),
+            &ffmpeg_info_with_libplacebo(),
+            vec![libplacebo_tonemap(PixelFormat::Yuv420p)],
+            uhd(),
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(
+            args[0].contains(":format=rgba,scale_vulkan=format=nv12:out_range=limited,"),
+            "{args:?}"
+        );
+        assert!(envs.is_empty(), "{envs:?}");
+    }
+
+    #[test]
+    fn resolve_libplacebo_on_vaapi_keeps_rgba_outside_ihd() {
+        let vaapi = Vaapi {
+            vulkan_capabilities: Some(VulkanCapabilities {
+                device_index: 0,
+                supported_decoders: HashMap::new(),
+                supported_encoders: HashMap::new(),
+                can_import_drm_prime: true,
+            }),
+            ..vaapi_accel_with_tonemap(VaapiDriver::RadeonSI, true, true, true)
+        };
+        let (args, envs) = resolve_libplacebo_with(
+            vaapi,
+            &ffmpeg_info_with_libplacebo_nv12_output(),
+            vec![libplacebo_tonemap(PixelFormat::Yuv420p)],
+            uhd(),
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(
+            args[0].contains(":format=rgba,scale_vulkan=format=nv12:out_range=limited,"),
+            "{args:?}"
+        );
+        assert!(envs.is_empty(), "{envs:?}");
+    }
+
+    #[test]
+    fn resolve_folds_pad_into_libplacebo_nv12_output() {
+        let (args, envs) = resolve_libplacebo_with(
+            vaapi_accel_with_libplacebo(true),
+            &ffmpeg_info_with_libplacebo_nv12_output(),
+            vec![libplacebo_tonemap(PixelFormat::Yuv420p), pad_to_1080p()],
+            FrameSize {
+                width: 1920,
+                height: 800,
+            },
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(
+            args[0].contains(
+                "libplacebo=w=1920:h=1080:pos_x=0:pos_y=140:pos_w=1920:pos_h=800:fillcolor=black:tonemapping="
+            ) && args[0].contains(":format=nv12:range=tv:nv12_output=match,")
+                && args[0].ends_with("format=vaapi,setsar=1"),
+            "{args:?}"
+        );
+        assert_eq!(envs.len(), 1, "{envs:?}");
     }
 
     fn resolve_libplacebo_vaapi(filters: Vec<VideoFilter>, size: FrameSize) -> Vec<String> {

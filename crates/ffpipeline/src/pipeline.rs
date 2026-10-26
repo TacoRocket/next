@@ -38,7 +38,7 @@ use crate::video_filter::{
     ClipFilter, ColorChannelMixerFilter, CropFilter, DeinterlaceFilter, Dv5WorkaroundFilter,
     EnsureAlphaFilter, FadeFilter, FormatFilter, FpsFilter, LoopFilter, PadFilter, ScaleFilter,
     SoftwareDeinterlaceFilter, SoftwareDeinterlaceOptions, SubtitleImageScaleFilter,
-    SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter, VideoFilter,
+    SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter, VideoFilter, VideoFilterOp,
 };
 
 pub const KEYFRAME_INTERVAL_SECONDS: u32 = 2;
@@ -1503,6 +1503,12 @@ impl Pipeline {
 
         if let Some(a) = &self.accel {
             result.extend(a.envs())
+        }
+
+        for filter in &self.filter_chain.filters {
+            if let PipelineFilter::Video(v) = filter {
+                result.extend(v.envs())
+            }
         }
 
         result
