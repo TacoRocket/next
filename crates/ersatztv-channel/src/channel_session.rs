@@ -139,10 +139,8 @@ pub struct ChannelSession {
     // after one failure, fallbacks use black so the fallback itself can't keep failing
     background_image_failed: bool,
     // the error card shares the channel's output settings, so it fails exactly when they are
-    // the problem; after that, fallbacks use the audio encoder's defaults, and after another
-    // failure, software video
-    fallback_default_audio: bool,
-    fallback_software_video: bool,
+    // the problem; each failed card moves fallbacks one step toward settings that can't fail
+    fallback_escalation: FallbackEscalation,
     degradation_report: Option<DegradationReport>,
 }
 
@@ -263,8 +261,7 @@ impl ChannelSession {
             input_starts: HashMap::new(),
             dynamic_http_client,
             background_image_failed: false,
-            fallback_default_audio: false,
-            fallback_software_video: false,
+            fallback_escalation: FallbackEscalation::default(),
             degradation_report,
         })
     }
@@ -691,10 +688,10 @@ impl ChannelSession {
             is_live && (source_is_continuous(&video_source) || source_is_continuous(&audio_source));
 
         let (mut audio, mut video) = stream_output_settings(&self.channel_config.normalization);
-        if is_fallback && self.fallback_default_audio {
+        if is_fallback && self.fallback_escalation.default_audio {
             use_default_audio(&mut audio);
         }
-        let software_video = is_fallback && self.fallback_software_video;
+        let software_video = is_fallback && self.fallback_escalation.software_video;
         if software_video {
             // a custom shader needs the hardware that just failed
             video.transcode.filter_options.custom_shader = None;
@@ -1175,6 +1172,10 @@ impl ChannelSession {
             });
         }
 
+        if is_fallback && !software_video {
+            self.fallback_escalation.gpu_fallback_played();
+        }
+
         Ok((finish, is_complete))
     }
 
@@ -1639,21 +1640,31 @@ impl ChannelSession {
             .await
     }
 
-    /// Moves fallbacks one step toward settings that can't fail: black instead of the
-    /// background image, then the audio encoder's defaults, then software video. Each step is
-    /// taken once per session; returns false when none is left.
+    /// Moves fallbacks one step toward settings that can't fail; returns false when none is
+    /// left. See [`FallbackEscalation`].
     fn escalate_fallback(&mut self) -> bool {
-        if let Some(image) = self.background_image() {
-            log::warn!("fallback background image {image} failed, using black instead");
-            self.background_image_failed = true;
-        } else if !self.fallback_default_audio {
-            log::warn!("fallbacks now use the audio encoder's defaults");
-            self.fallback_default_audio = true;
-        } else if !self.fallback_software_video && self.hw_accel.is_some() {
-            log::warn!("fallbacks now use software video");
-            self.fallback_software_video = true;
-        } else {
-            return false;
+        let image = self.background_image().map(str::to_owned);
+        let step = self
+            .fallback_escalation
+            .next(image.is_some(), self.hw_accel.is_some());
+        match step {
+            Some(FallbackStep::Black) => {
+                log::warn!(
+                    "fallback background image {} failed, using black instead",
+                    image.unwrap_or_default()
+                );
+                self.background_image_failed = true;
+            }
+            Some(FallbackStep::DefaultAudio) => {
+                log::warn!("fallbacks now use the audio encoder's defaults");
+            }
+            Some(FallbackStep::RetryGpu) => {
+                log::warn!("retrying the fallback on the GPU once before using software video");
+            }
+            Some(FallbackStep::SoftwareVideo) => {
+                log::warn!("fallbacks now use software video");
+            }
+            None => return false,
         }
         true
     }
@@ -2296,6 +2307,51 @@ fn stream_output_settings(
     (audio, video)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FallbackStep {
+    Black,
+    DefaultAudio,
+    RetryGpu,
+    SoftwareVideo,
+}
+
+/// The order a failed error card changes things: black instead of the background image, the
+/// audio encoder's defaults, one more try on the GPU, then software video. Black, default audio
+/// and software video each happen once per session. The GPU retry is re-armed whenever a card
+/// plays on the GPU, because a GPU failure can pass (e.g. a crashed ffmpeg still holding GPU
+/// memory), and software video costs several cores for HEVC.
+#[derive(Debug, Default)]
+struct FallbackEscalation {
+    default_audio: bool,
+    gpu_retried: bool,
+    software_video: bool,
+}
+
+impl FallbackEscalation {
+    fn next(&mut self, has_background_image: bool, has_hardware: bool) -> Option<FallbackStep> {
+        let can_leave_hardware = has_hardware && !self.software_video;
+        let step = if has_background_image {
+            FallbackStep::Black
+        } else if !self.default_audio {
+            self.default_audio = true;
+            FallbackStep::DefaultAudio
+        } else if can_leave_hardware && !self.gpu_retried {
+            self.gpu_retried = true;
+            FallbackStep::RetryGpu
+        } else if can_leave_hardware {
+            self.software_video = true;
+            FallbackStep::SoftwareVideo
+        } else {
+            return None;
+        };
+        Some(step)
+    }
+
+    fn gpu_fallback_played(&mut self) {
+        self.gpu_retried = false;
+    }
+}
+
 /// The audio encoder's defaults for an error card, after one failed with the channel's own
 /// settings (e.g. AC-3 cannot encode 96 kHz). The codec stays the channel's.
 fn use_default_audio(audio: &mut AudioOutputSettings) {
@@ -2839,6 +2895,37 @@ mod tests {
             video.transcode.format,
             ffpipeline::pipeline::EncodeFormat::Hevc
         );
+    }
+
+    #[test]
+    fn fallback_escalation_steps_in_order_and_ends() {
+        let mut steps = FallbackEscalation::default();
+        assert_eq!(steps.next(true, true), Some(FallbackStep::Black));
+        assert_eq!(steps.next(false, true), Some(FallbackStep::DefaultAudio));
+        assert_eq!(steps.next(false, true), Some(FallbackStep::RetryGpu));
+        assert_eq!(steps.next(false, true), Some(FallbackStep::SoftwareVideo));
+        assert_eq!(steps.next(false, true), None);
+        // software video is final for the session, even after a card plays
+        steps.gpu_fallback_played();
+        assert_eq!(steps.next(false, true), None);
+    }
+
+    #[test]
+    fn fallback_escalation_rearms_the_gpu_retry_after_a_gpu_card_plays() {
+        let mut steps = FallbackEscalation::default();
+        assert_eq!(steps.next(false, true), Some(FallbackStep::DefaultAudio));
+        assert_eq!(steps.next(false, true), Some(FallbackStep::RetryGpu));
+        steps.gpu_fallback_played();
+        // a later, separate GPU failure gets its own retry instead of software video
+        assert_eq!(steps.next(false, true), Some(FallbackStep::RetryGpu));
+        assert_eq!(steps.next(false, true), Some(FallbackStep::SoftwareVideo));
+    }
+
+    #[test]
+    fn fallback_escalation_without_hardware_stops_after_default_audio() {
+        let mut steps = FallbackEscalation::default();
+        assert_eq!(steps.next(false, false), Some(FallbackStep::DefaultAudio));
+        assert_eq!(steps.next(false, false), None);
     }
 
     #[test]
