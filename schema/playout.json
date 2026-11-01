@@ -88,16 +88,36 @@
         },
         "credit_squeeze": {
           "type": "object",
-          "description": "Shrink the program over a local still after the marker; preserves audio and item end. Unsupported items stay full-screen.",
+          "description": "Shrink the program over a local still or moving advertisement after the marker, preserving item end. Unsupported items keep the original picture and audio.",
           "properties": {
             "background_image": {
               "type": "string",
-              "description": "Local PNG or JPEG path readable by the worker."
+              "description": "Local PNG or JPEG path for still mode; retained for compatibility and ignored when advertisement is supplied."
             },
             "start_ms": {
               "type": "integer",
               "minimum": 0,
-              "description": "Milliseconds after this item starts; zero starts already squeezed."
+              "description": "Milliseconds after this item starts. Zero begins in credits; moving-ad elapsed_ms controls entrance progress."
+            },
+            "advertisement": {
+              "type": "object",
+              "description": "One moving ad per item. Replaces the still and program audio after the marker. Requires the moving-ad fork worker.",
+              "properties": {
+                "source": {
+                  "$ref": "#/definitions/PlayoutItemSource",
+                  "description": "Ad source. Its in-point is the ad position at this item's marker; the scheduler ends the item at the ad boundary or original program end."
+                },
+                "elapsed_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Credits time elapsed at item start. Zero for first entry; prevents replaying the entrance on subsequent ads or joins."
+                }
+              },
+              "required": [
+                "source",
+                "elapsed_ms"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [

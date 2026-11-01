@@ -1,8 +1,16 @@
+use std::time::Duration;
+
 use crate::output_settings::AudioLoudnessSettings;
 use crate::pipeline::{FrameState, Hz};
 
 #[derive(Debug, Clone)]
 pub enum AudioFilter {
+    CreditSqueeze {
+        layer_index: usize,
+        stream_index: Option<u32>,
+        start: Duration,
+        channels: u32,
+    },
     Resample,
     Pad,
     LoudNorm {
@@ -22,6 +30,7 @@ impl AudioFilter {
 
     pub(crate) fn as_arg(&self) -> Option<String> {
         match self {
+            AudioFilter::CreditSqueeze { .. } => None,
             AudioFilter::Resample => Some(String::from("aresample=async=1")),
             AudioFilter::Pad => Some(String::from("apad")),
             AudioFilter::LoudNorm {

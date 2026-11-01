@@ -36,6 +36,13 @@ pub struct InputSettings {
 pub struct CreditSqueezeInput {
     pub start: Duration,
     pub background: Result<GraphicsInput, String>,
+    pub advertisement: Option<CreditSqueezeAdvertisementInput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreditSqueezeAdvertisementInput {
+    pub elapsed: Duration,
+    pub out_point: Duration,
 }
 
 impl InputSettings {

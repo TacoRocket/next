@@ -239,6 +239,7 @@ impl FilterChain {
                         );
                     }
                     let mut stage = squeeze.clone();
+                    stage.program_size = current_state.size;
                     stage.software_output = *encoder_surface == FrameSurface::System
                         || self.filters[filter_index + 1..].iter().any(|next| {
                             if let PipelineFilter::Overlay(overlay) = next {
@@ -871,7 +872,35 @@ impl FilterChain {
 
         if audio_filter_count > 0 {
             let mut filter_chain = String::new();
-
+            for filter in &self.filters {
+                if let PipelineFilter::Audio(AudioFilter::CreditSqueeze {
+                    layer_index,
+                    stream_index,
+                    start,
+                    channels,
+                }) = filter
+                {
+                    let input = graphics_labels[*layer_index]
+                        .as_ref()
+                        .expect("validated squeeze input");
+                    let (input_index, _) = input.split_once(':').expect("input stream label");
+                    let normalize = format!(
+                        "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts={channels}c"
+                    );
+                    let ad = stream_index.map_or_else(
+                        || format!("anullsrc=r=48000:cl={channels}c,{normalize}"),
+                        |index| format!("[{input_index}:{index}]{normalize},asetpts=PTS-STARTPTS"),
+                    );
+                    let start = start.as_secs_f64();
+                    if start == 0.0 {
+                        filter_chain
+                            .push_str(&format!("[{}]anullsink;{ad}[cs_audio];", self.audio_label));
+                    } else {
+                        filter_chain.push_str(&format!("[{}]{normalize},atrim=end={start},apad=whole_dur={start},atrim=end={start},asetpts=PTS-STARTPTS[cs_audio_before];{ad}[cs_audio_ad];[cs_audio_before][cs_audio_ad]concat=n=2:v=0:a=1[cs_audio];", self.audio_label));
+                    }
+                    self.audio_label = String::from("cs_audio");
+                }
+            }
             filter_chain.push_str(&format!("[{}]", self.audio_label));
 
             let mut audio_chain: Vec<String> = Vec::new();
