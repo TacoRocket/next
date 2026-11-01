@@ -11,6 +11,7 @@ pub mod audio_filter;
 pub mod capabilities;
 pub mod color;
 pub mod copy_decision;
+pub mod degradation;
 pub mod error;
 pub mod ffmpeg_info;
 pub mod filter_chain;

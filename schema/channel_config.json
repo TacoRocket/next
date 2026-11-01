@@ -312,6 +312,14 @@
     "FfmpegConfig": {
       "type": "object",
       "properties": {
+        "degradation_report": {
+          "description": "File the channel rewrites as each item starts, listing where its last few items run other\nthan as configured (hardware it could not use, a custom shader it did not draw). Keep it out\nof the output folder, which is served to clients. Unset writes none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "disabled_filters": {
           "description": "ffmpeg video filters to never use, even when the ffmpeg build has them, e.g.\n`[\"scale_cuda\"]`. Pipelines that need one use another filter or software instead.",
           "type": "array",

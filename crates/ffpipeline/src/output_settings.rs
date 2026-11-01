@@ -9,6 +9,9 @@ pub struct OutputSettings {
     pub audio: AudioOutputSettings,
     pub video: VideoOutputSettings,
     pub accel: Option<HardwareAccel>,
+    /// The accel the channel asked for when it could not be set up, by name. The pipeline runs on
+    /// the cpu and reports that against it.
+    pub unavailable_accel: Option<String>,
     pub format: OutputFormat,
     pub pts_offset: Option<PtsOffset>,
     pub realtime: bool,

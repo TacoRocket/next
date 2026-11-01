@@ -1,4 +1,5 @@
 mod channel_session;
+mod degradation_report;
 mod dossier;
 mod dynamic_retry;
 mod fallback;

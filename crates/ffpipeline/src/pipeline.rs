@@ -13,6 +13,9 @@ use crate::color::FrameColor;
 use crate::copy_decision::{
     CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision, video_copy_decision,
 };
+use crate::degradation::{
+    DegradationCode, Degradations, PipelineDegradation, accel_name, format_name,
+};
 use crate::error::FFPipelineError;
 use crate::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use crate::filter_chain::{EncoderTarget, FilterChain, PipelineFilter};
@@ -381,6 +384,7 @@ pub struct Pipeline {
     filter_chain: FilterChain,
     output_options: Vec<OutputOption>,
     env_vars: Vec<EnvironmentVariable>,
+    degradations: Degradations,
 
     input_request_context: FfmpegInputRequestContext,
     output_context: OutputContext,
@@ -393,6 +397,7 @@ impl Pipeline {
         output_settings: OutputSettings,
     ) -> Result<Pipeline, FFPipelineError> {
         let mut final_output_settings = output_settings;
+        let mut degradations = Degradations::default();
 
         if let Some(silence) = input_settings.audio_input.silence_if_missing() {
             log::info!(
@@ -409,8 +414,23 @@ impl Pipeline {
                 .unwrap_or(false)
         {
             log::warn!("ffmpeg does not support requested accel {:?}", accel);
+            final_output_settings.unavailable_accel = Some(accel_name(accel));
             final_output_settings.accel = None;
         }
+        // the accel this channel asked for, whether or not it could be used
+        let requested_accel = final_output_settings
+            .accel
+            .as_ref()
+            .map(accel_name)
+            .or_else(|| final_output_settings.unavailable_accel.clone());
+        let accel_usable = final_output_settings.accel.is_some();
+        let unusable = move |what: &str, name: &str| {
+            if accel_usable {
+                format!("{name} hardware {what} cannot be used")
+            } else {
+                format!("{name} is unavailable to this channel, so hardware {what} cannot be used")
+            }
+        };
 
         let video_transcode = &mut final_output_settings.video.transcode;
         if video_transcode.format == EncodeFormat::Mpeg2Video && video_transcode.bit_depth == 10 {
@@ -459,18 +479,44 @@ impl Pipeline {
             _ => {
                 let format = video_transcode.format;
                 let bit_depth = video_transcode.bit_depth;
-                VideoEncoder::Encode(
-                    final_output_settings
-                        .accel
-                        .as_ref()
-                        .filter(|a| a.can_encode(&format, bit_depth))
-                        .and_then(|a| a.codec_for_format(&format, bit_depth, video_transcode.size))
-                        .unwrap_or_else(|| match format {
-                            EncodeFormat::H264 => VideoCodec::libx264(),
-                            EncodeFormat::Hevc => VideoCodec::libx265(),
-                            EncodeFormat::Mpeg2Video => VideoCodec::mpeg2video(),
-                        }),
-                )
+                let hardware_codec = final_output_settings
+                    .accel
+                    .as_ref()
+                    .filter(|a| a.can_encode(&format, bit_depth))
+                    .and_then(|a| a.codec_for_format(&format, bit_depth, video_transcode.size));
+                match (&final_output_settings.accel, &hardware_codec) {
+                    (_, None) => {
+                        if let Some(name) = &requested_accel {
+                            degradations.add(
+                                DegradationCode::HardwareEncodeUnavailable,
+                                format!(
+                                    "{} for {}-bit {} output. Using CPU encoding.",
+                                    unusable("encoding", name),
+                                    bit_depth,
+                                    format_name(&format)
+                                ),
+                            )
+                        }
+                    }
+                    (Some(HardwareAccel::Vaapi(vaapi)), Some(_))
+                        if vaapi.low_power_unavailable(&format, bit_depth) =>
+                    {
+                        degradations.add(
+                            DegradationCode::VaapiLowPowerUnavailable,
+                            format!(
+                                "The VAAPI device has no low-power {} encoder for {}-bit output. Using regular VAAPI encoding.",
+                                format_name(&format),
+                                bit_depth
+                            ),
+                        )
+                    }
+                    _ => {}
+                }
+                VideoEncoder::Encode(hardware_codec.unwrap_or_else(|| match format {
+                    EncodeFormat::H264 => VideoCodec::libx264(),
+                    EncodeFormat::Hevc => VideoCodec::libx265(),
+                    EncodeFormat::Mpeg2Video => VideoCodec::mpeg2video(),
+                }))
             }
         };
 
@@ -508,6 +554,18 @@ impl Pipeline {
             &video_encoder,
             final_output_settings.accel.as_ref(),
         );
+        if let (VideoDecoder::Software, Some(name)) = (&video_decoder, &requested_accel) {
+            degradations.add(
+                DegradationCode::HardwareDecodeUnavailable,
+                format!(
+                    "{} for this item ({} {}, {}). Using CPU decoding.",
+                    unusable("decoding", name),
+                    video_stream.codec,
+                    video_stream.profile,
+                    video_stream.pix_fmt
+                ),
+            );
+        }
 
         let hdr = match (
             video_stream.dv_profile,
@@ -629,6 +687,10 @@ impl Pipeline {
         let scale = match &video_transcode.filter_options.custom_shader {
             Some(_) if hdr != HdrFormat::None && !shader_tonemaps => {
                 log::debug!("{hdr:?} source; not drawing the custom shader");
+                degradations.add(
+                    DegradationCode::CustomShaderHdrSkipped,
+                    format!("The custom shader is not drawn on this {hdr:?} source."),
+                );
                 PipelineFilter::Video(scale.into())
             }
             Some(shader) => match &final_output_settings.accel {
@@ -646,6 +708,12 @@ impl Pipeline {
                 _ => {
                     log::warn!(
                         "the custom shader needs vaapi with libplacebo and a vulkan device that imports its frames; not drawing it"
+                    );
+                    degradations.add(
+                        DegradationCode::CustomShaderUnavailable,
+                        String::from(
+                            "The custom shader needs VAAPI with libplacebo and a Vulkan device that imports its frames; it is not drawn.",
+                        ),
                     );
                     PipelineFilter::Video(scale.into())
                 }
@@ -1168,11 +1236,17 @@ impl Pipeline {
             input_request_context,
             output_context,
             env_vars,
+            degradations,
         })
     }
 
     pub fn copy_decisions(&self) -> &CopyDecisions {
         &self.copy_decisions
+    }
+
+    /// Where this item runs other than as configured. Complete once the pipeline is optimized.
+    pub fn degradations(&self) -> &[PipelineDegradation] {
+        self.degradations.as_slice()
     }
 
     pub fn optimize(&mut self) {
@@ -1250,6 +1324,25 @@ impl Pipeline {
             &self.initial_state,
             &self.output_context.encoder_target,
         );
+
+        // an accel resolves the tonemap to its own filter where it can; one left as the software
+        // tonemap runs on the cpu
+        if self.initial_state.hdr_format != HdrFormat::None
+            && let Some(accel) = &self.accel
+            && self
+                .filter_chain
+                .filters
+                .iter()
+                .any(|f| matches!(f, PipelineFilter::Video(VideoFilter::ToneMap(_))))
+        {
+            self.degradations.add(
+                DegradationCode::HardwareTonemapUnavailable,
+                format!(
+                    "{} hardware tone mapping is unavailable for this HDR item. Using CPU tone mapping.",
+                    accel_name(accel)
+                ),
+            );
+        }
 
         // prepend decoder filters;
         // this is a special case that's only really needed for CUDA's hwupload workaround
@@ -1851,6 +1944,7 @@ mod tests {
                 },
             },
             accel: None,
+            unavailable_accel: None,
             format: crate::output_format::OutputFormat::Hls {
                 playlist: "out.m3u8".to_owned(),
                 segment_template: "live%06d.ts".to_owned(),
@@ -1868,10 +1962,7 @@ mod tests {
         }
     }
 
-    fn hdr10_shader_args(with_lut: bool) -> String {
-        use crate::filter_chain::tests::{
-            ffmpeg_info_with_libplacebo, vaapi_accel_with_libplacebo,
-        };
+    fn hdr10_input() -> InputSettings {
         let mut input = multichannel_ac3_input("main.mkv");
         for probe in [
             &mut input.video_input.probe_result,
@@ -1891,6 +1982,22 @@ mod tests {
                 };
             }
         }
+        input
+    }
+
+    fn degradation_codes(pipeline: &Pipeline) -> Vec<DegradationCode> {
+        pipeline.degradations().iter().map(|d| d.code).collect()
+    }
+
+    fn hdr10_shader_args(with_lut: bool) -> String {
+        hdr10_shader_pipeline(with_lut).args().join(" ")
+    }
+
+    fn hdr10_shader_pipeline(with_lut: bool) -> Pipeline {
+        use crate::filter_chain::tests::{
+            ffmpeg_info_with_libplacebo, vaapi_accel_with_libplacebo,
+        };
+        let input = hdr10_input();
         let mut output = OutputSettings {
             accel: Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
             ..stereo_output()
@@ -1918,7 +2025,152 @@ mod tests {
         }
         let mut pipeline = Pipeline::full(&ffmpeg_info, input, output).unwrap();
         pipeline.optimize();
-        pipeline.args().join(" ")
+        pipeline
+    }
+
+    #[test]
+    fn hdr10_drawn_in_the_stage_reports_no_shader_or_tonemap_degradation() {
+        let codes = degradation_codes(&hdr10_shader_pipeline(true));
+        assert!(
+            !codes.contains(&DegradationCode::CustomShaderHdrSkipped),
+            "{codes:?}"
+        );
+        assert!(
+            !codes.contains(&DegradationCode::HardwareTonemapUnavailable),
+            "{codes:?}"
+        );
+    }
+
+    #[test]
+    fn hdr10_without_the_lut_filter_reports_the_skipped_shader() {
+        let codes = degradation_codes(&hdr10_shader_pipeline(false));
+        assert!(
+            codes.contains(&DegradationCode::CustomShaderHdrSkipped),
+            "{codes:?}"
+        );
+        // libplacebo still tone-maps on the gpu
+        assert!(
+            !codes.contains(&DegradationCode::HardwareTonemapUnavailable),
+            "{codes:?}"
+        );
+    }
+
+    #[test]
+    fn hdr_tone_mapped_in_software_under_an_accel_is_reported() {
+        use crate::filter_chain::tests::{ffmpeg_info_with_filters, vaapi_accel_with_libplacebo};
+        let mut ffmpeg_info = ffmpeg_info_with_filters(&[]);
+        ffmpeg_info
+            .hwaccels
+            .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
+        let output = OutputSettings {
+            accel: Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
+            ..stereo_output()
+        };
+        let mut pipeline = Pipeline::full(&ffmpeg_info, hdr10_input(), output).unwrap();
+        pipeline.optimize();
+
+        assert!(
+            pipeline.args().join(" ").contains("zscale=t=linear"),
+            "{:?}",
+            pipeline.args()
+        );
+        let tonemap = pipeline
+            .degradations()
+            .iter()
+            .find(|d| d.code == DegradationCode::HardwareTonemapUnavailable)
+            .expect("tonemap degradation");
+        assert_eq!(
+            tonemap.message,
+            "VAAPI hardware tone mapping is unavailable for this HDR item. Using CPU tone mapping."
+        );
+    }
+
+    #[test]
+    fn decoding_and_encoding_in_software_under_an_accel_are_reported() {
+        use crate::filter_chain::tests::{ffmpeg_info_with_filters, vaapi_accel_with_libplacebo};
+        let mut ffmpeg_info = ffmpeg_info_with_filters(&[]);
+        ffmpeg_info
+            .hwaccels
+            .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
+        // the test device lists no decode or encode profiles
+        let output = OutputSettings {
+            accel: Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
+            ..stereo_output()
+        };
+        let mut pipeline =
+            Pipeline::full(&ffmpeg_info, multichannel_ac3_input("main.mkv"), output).unwrap();
+        pipeline.optimize();
+
+        assert_eq!(
+            degradation_codes(&pipeline),
+            [
+                DegradationCode::HardwareEncodeUnavailable,
+                DegradationCode::HardwareDecodeUnavailable
+            ]
+        );
+        assert!(
+            pipeline.degradations()[0]
+                .message
+                .starts_with("VAAPI hardware encoding cannot be used for 8-bit H.264 output."),
+            "{:?}",
+            pipeline.degradations()
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::the_device_could_not_be_opened(None, Some("VAAPI"))]
+    #[case::ffmpeg_lacks_the_accel(
+        Some(HardwareAccel::Vaapi(crate::filter_chain::tests::vaapi_accel_with_libplacebo(true))),
+        None
+    )]
+    fn an_accel_the_channel_cannot_use_reports_cpu_decode_and_encode(
+        #[case] accel: Option<HardwareAccel>,
+        #[case] unavailable_accel: Option<&str>,
+    ) {
+        let output = OutputSettings {
+            accel,
+            unavailable_accel: unavailable_accel.map(String::from),
+            ..stereo_output()
+        };
+        let mut pipeline = Pipeline::full(
+            &FfmpegInfo::default(),
+            multichannel_ac3_input("main.mkv"),
+            output,
+        )
+        .unwrap();
+        pipeline.optimize();
+
+        assert_eq!(
+            degradation_codes(&pipeline),
+            [
+                DegradationCode::HardwareEncodeUnavailable,
+                DegradationCode::HardwareDecodeUnavailable
+            ]
+        );
+        assert!(
+            pipeline.degradations()[0].message.starts_with(
+                "VAAPI is unavailable to this channel, so hardware encoding cannot be used for 8-bit H.264 output."
+            ),
+            "{:?}",
+            pipeline.degradations()
+        );
+    }
+
+    #[test]
+    fn software_without_an_accel_reports_nothing() {
+        let mut pipeline = Pipeline::full(
+            &FfmpegInfo::default(),
+            multichannel_ac3_input("main.mkv"),
+            stereo_output(),
+        )
+        .unwrap();
+        pipeline.optimize();
+
+        assert!(
+            pipeline.degradations().is_empty(),
+            "{:?}",
+            pipeline.degradations()
+        );
     }
 
     #[test]
@@ -1956,6 +2208,10 @@ mod tests {
 
         assert!(!args.contains("libplacebo"), "{args}");
         assert!(args.contains("[0:0]scale=1080:720:"), "{args}");
+        assert_eq!(
+            degradation_codes(&pipeline),
+            [DegradationCode::CustomShaderUnavailable]
+        );
     }
 
     #[test]

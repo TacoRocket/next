@@ -44,6 +44,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::Mutex;
 use tracing::Instrument;
 
+use crate::degradation_report::DegradationReport;
 use crate::dossier::DossierBuilder;
 use crate::dynamic_retry::{RetryPolicy, get_json, with_retry};
 use crate::fallback::{FallbackReason, error_card_subtitle};
@@ -112,6 +113,8 @@ pub struct ChannelSession {
     ffprobe_path: PathBuf,
     ffmpeg_info: FfmpegInfo,
     hw_accel: Option<ffpipeline::hw_accel::HardwareAccel>,
+    // the configured accel when it could not be set up, so items report the cpu fallback
+    unavailable_accel: Option<String>,
 
     transcoded_until: OffsetDateTime,
     ready_file: PathBuf,
@@ -133,6 +136,7 @@ pub struct ChannelSession {
     dynamic_http_client: reqwest::Client,
     // after one failure, fallbacks use black so the fallback itself can't keep failing
     background_image_failed: bool,
+    degradation_report: Option<DegradationReport>,
 }
 
 impl ChannelSession {
@@ -221,6 +225,12 @@ impl ChannelSession {
             .build()
             .map_err(|e| ChannelError::ChannelStartup(format!("http client: {e}")))?;
 
+        let degradation_report = channel_config
+            .ffmpeg
+            .degradation_report
+            .as_ref()
+            .map(|path| DegradationReport::new(PathBuf::from(path)));
+
         Ok(ChannelSession {
             channel_config,
             playout_loader,
@@ -231,6 +241,7 @@ impl ChannelSession {
             ffprobe_path: ffprobe_path.to_owned(),
             ffmpeg_info: FfmpegInfo::default(),
             hw_accel: None,
+            unavailable_accel: None,
             transcoded_until: now + start_time_offset,
             ready_file,
             output_file: ffmpeg_output_file,
@@ -245,6 +256,7 @@ impl ChannelSession {
             input_starts: HashMap::new(),
             dynamic_http_client,
             background_image_failed: false,
+            degradation_report,
         })
     }
 
@@ -267,6 +279,13 @@ impl ChannelSession {
             .accel
             .as_ref()
             .and_then(|a| a.to_pipeline(&self.channel_config));
+        self.unavailable_accel = match (
+            &self.channel_config.normalization.video.accel,
+            &self.hw_accel,
+        ) {
+            (Some(requested), None) => Some(format!("{requested:?}").to_uppercase()),
+            _ => None,
+        };
 
         let pm = self.playlist_manager.clone();
         let tn = self.timeout_notify.clone();
@@ -653,6 +672,7 @@ impl ChannelSession {
             audio,
             video,
             accel: self.hw_accel.clone(),
+            unavailable_accel: self.unavailable_accel.clone(),
             format: ffpipeline::output_format::OutputFormat::Hls {
                 playlist: self.output_file.clone(),
                 segment_template: self.output_segment_template.clone(),
@@ -839,6 +859,17 @@ impl ChannelSession {
         let args = pipeline_result.args();
         let envs = pipeline_result.envs();
         log::debug!("optimized pipeline: {}", args.join(" "));
+
+        // the fallback item is not what the playout scheduled, so it has nothing to report
+        if !is_fallback && let Some(report) = self.degradation_report.as_mut() {
+            report
+                .record(
+                    current_item,
+                    pipeline_result.degradations(),
+                    OffsetDateTime::now_utc(),
+                )
+                .await;
+        }
 
         let copy_note = pipeline_result
             .copy_decisions()
@@ -2434,6 +2465,7 @@ mod tests {
             audio,
             video,
             accel: None,
+            unavailable_accel: None,
             format: OutputFormat::Hls {
                 playlist: String::from("ffmpeg.m3u8"),
                 segment_template: String::from("live%06d.ts"),

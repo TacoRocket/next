@@ -24,6 +24,7 @@ pub const PATH_FIELDS: &[&str] = &[
     "/ffmpeg/ffmpeg_path",
     "/ffmpeg/ffprobe_path",
     "/ffmpeg/reports_folder",
+    "/ffmpeg/degradation_report",
     "/fallback/background_image",
     "/normalization/subtitle/fonts_folder",
 ];
@@ -89,6 +90,11 @@ pub struct FfmpegConfig {
     /// subfolder with the ffmpeg output, the channel config and media info. Unset writes none.
     #[serde(default)]
     pub reports_folder: Option<String>,
+    /// File the channel rewrites as each item starts, listing where its last few items run other
+    /// than as configured (hardware it could not use, a custom shader it did not draw). Keep it out
+    /// of the output folder, which is served to clients. Unset writes none.
+    #[serde(default)]
+    pub degradation_report: Option<String>,
 }
 
 /// Controls the content that replaces scheduled content when there is nothing to play

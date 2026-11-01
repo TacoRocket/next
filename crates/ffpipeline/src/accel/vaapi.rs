@@ -57,6 +57,16 @@ impl Vaapi {
         )
     }
 
+    /// `always_low_power` asked for the low-power entrypoint, and the device can only encode this
+    /// output with the regular one
+    pub(crate) fn low_power_unavailable(&self, format: &EncodeFormat, bit_depth: u8) -> bool {
+        self.prefer_low_power
+            && self.always_low_power
+            && self
+                .encode_entrypoint(format, bit_depth)
+                .is_some_and(|entrypoint| !entrypoint.low_power)
+    }
+
     // scale_vulkan writes only 8-bit YUV
     fn can_libplacebo_tonemap(
         &self,
@@ -1249,6 +1259,41 @@ mod tests {
                 .join(" ");
             assert_eq!(
                 options, expected,
+                "{format} prefer_low_power={prefer_low_power} always_low_power={always_low_power}"
+            );
+        }
+    }
+
+    #[test]
+    fn low_power_is_unavailable_only_when_always_asked_and_the_device_lacks_it() {
+        use libva_sys::*;
+
+        let mut vaapi = make_vaapi();
+        for (profile, entrypoint) in [
+            (VA_PROFILE_H264_MAIN, VA_ENTRYPOINT_ENC_SLICE),
+            (VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE),
+            (VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE_LP),
+        ] {
+            vaapi.capabilities.supported.insert((profile, entrypoint));
+            vaapi
+                .capabilities
+                .rate_control
+                .insert((profile, entrypoint), VA_RC_VBR);
+        }
+
+        for (prefer_low_power, always_low_power, format, expected) in [
+            (true, true, EncodeFormat::H264, true),
+            (true, false, EncodeFormat::H264, false),
+            (false, false, EncodeFormat::H264, false),
+            (true, true, EncodeFormat::Hevc, false),
+            // no encoder at all is a software encode, not a low-power fallback
+            (true, true, EncodeFormat::Mpeg2Video, false),
+        ] {
+            vaapi.prefer_low_power = prefer_low_power;
+            vaapi.always_low_power = always_low_power;
+            assert_eq!(
+                vaapi.low_power_unavailable(&format, 8),
+                expected,
                 "{format} prefer_low_power={prefer_low_power} always_low_power={always_low_power}"
             );
         }
