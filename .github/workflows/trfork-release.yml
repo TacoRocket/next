@@ -1,0 +1,49 @@
+name: Fork release
+# Publishes this fork's tagged builds (vX.Y.Z-trfork.N) as a GitHub release, so the
+# TacoRocket Tunarr fork can pin and download them. Upstream's release.yml signs with
+# credentials this fork does not hold and only matches plain vX.Y.Z tags, so this
+# reuses upstream's own build recipe (artifacts.yml) unsigned and attaches its archives.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-trfork.[0-9]+'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  artifacts:
+    uses: ./.github/workflows/artifacts.yml
+    with:
+      tag: ${{ github.ref_name }}
+      publish: false
+
+  release:
+    name: Publish release
+    needs: artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          shopt -s nullglob
+          archives=(ersatztv-next-"$TAG"-*.tar.gz ersatztv-next-"$TAG"-*.zip)
+          if (( ${#archives[@]} == 0 )); then
+            echo "no archives were built for $TAG" >&2
+            exit 1
+          fi
+          sha256sum "${archives[@]}" > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "$TAG" \
+            --notes "TacoRocket fork build of ErsatzTV next, unsigned. See the tagged commit for what differs from upstream." \
+            "${archives[@]}" SHA256SUMS
