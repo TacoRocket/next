@@ -1,27 +1,247 @@
 name: Fork release
-# Publishes this fork's tagged builds (vX.Y.Z-trfork.N) as a GitHub release, so the
-# TacoRocket Tunarr fork can pin and download them. Upstream's release.yml signs with
-# credentials this fork does not hold and only matches plain vX.Y.Z tags, so this
-# reuses upstream's own build recipe (artifacts.yml) unsigned and attaches its archives.
+# Builds this fork and publishes it as a GitHub release, so the TacoRocket Tunarr fork
+# can pin and download it. Upstream's release.yml signs with credentials this fork does
+# not hold, so the archives are unsigned.
+#
+# To release, set the workspace version to X.Y.Z-trfork.N on the version branch
+# (trfork/vX.Y.Z), then point trfork/release at it:
+#
+#   git push --force origin trfork/vX.Y.Z:trfork/release
+#
+# The release is tagged vX.Y.Z-trfork.N from the workspace version. A version that is
+# already released only builds.
+#
+# Why a branch rather than a tag: a run can reuse only caches saved on its own ref or on
+# the default branch. Every tag is a new ref, so each tag build compiled every dependency
+# from scratch. Every release runs on this one branch instead and reuses the
+# dependencies the previous release compiled. Only the workspace crates rebuild.
+#
+# Why it tests less than upstream: upstream tested its own release on every platform. A
+# fork release is that release plus a few commits, so this lints and tests, on Linux
+# only, the crates those commits change and the crates that depend on them. Every
+# platform still builds.
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+-trfork.[0-9]+'
+    branches:
+      - trfork/release
+
+concurrency:
+  group: fork-release
 
 permissions:
   contents: write
-  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  RUSTDOCFLAGS: -Dwarnings
 
 jobs:
-  artifacts:
-    uses: ./.github/workflows/artifacts.yml
-    with:
-      tag: ${{ github.ref_name }}
-      publish: false
+  version:
+    name: Read the version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          tag="v${version}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-trfork\.[0-9]+$ ]]; then
+            echo "::error::The workspace version '${version}' is not X.Y.Z-trfork.N"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::warning::${tag} is already released, so this run only builds. Bump the workspace version to release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Lint and test the fork's crates
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-trfork
+
+      - name: Pick the crates
+        id: crates
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          # The upstream release this one is built on, e.g. v0.2.4 for v0.2.4-trfork.1.
+          base="${TAG%-trfork.*}"
+          git fetch --no-tags --quiet https://github.com/ErsatzTV/next "refs/tags/${base}:refs/tags/${base}"
+          changed=$(git diff --name-only "$base" HEAD)
+
+          # A change outside the crates, other than CI, the generated schemas and the
+          # version bump, could affect any of them.
+          if grep -qvE '^(crates/|\.github/|schema/|Cargo\.(toml|lock)$)' <<< "$changed"; then
+            echo "args=--workspace" >> "$GITHUB_OUTPUT"
+            echo "Linting and testing the whole workspace: the fork changes files outside the crates." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          crates=$(grep '^crates/' <<< "$changed" | cut -d/ -f2 | sort -u || true)
+          if [[ -z "$crates" ]]; then
+            echo "Nothing to lint or test: the fork changes no crate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # The changed crates and every workspace crate that depends on one.
+          packages=$(for crate in $crates; do
+            cargo tree --locked --workspace --all-features --target all -i "$crate" -e normal,build,dev --prefix none --format '{p}'
+          done | awk '{ print $1 }' | sort -u)
+
+          args=""
+          for package in $packages; do
+            args+=" -p ${package}"
+          done
+          echo "args=${args}" >> "$GITHUB_OUTPUT"
+          echo "Linting and testing:${args}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        if: steps.crates.outputs.args != ''
+        run: cargo clippy --locked --all-features --all-targets ${{ steps.crates.outputs.args }} -- -D clippy::all
+
+      - name: Run Tests
+        if: steps.crates.outputs.args != ''
+        run: cargo test --locked --all-features ${{ steps.crates.outputs.args }}
+
+  build:
+    name: Build
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+            rust_target: x86_64-pc-windows-msvc
+            exe_ext: .exe
+          - os: ubuntu-22.04
+            target: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+            exe_ext: ""
+          - os: ubuntu-latest
+            target: linux-musl-x64
+            rust_target: x86_64-unknown-linux-musl
+            exe_ext: ""
+          - os: ubuntu-22.04-arm
+            target: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+            exe_ext: ""
+          - os: macos-15-intel
+            target: macos-x64
+            rust_target: x86_64-apple-darwin
+            exe_ext: ""
+          - os: macos-15
+            target: macos-arm64
+            rust_target: aarch64-apple-darwin
+            exe_ext: ""
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        run: rustup toolchain install
+      - name: Show Toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Must vary by runner image: rust-cache keys on os/arch only, so 22.04 and
+          # latest would share a key and restore each other's host build scripts.
+          prefix-key: v1-trfork-${{ matrix.os }}
+          # Workaround for https://github.com/Swatinem/rust-cache/issues/341:
+          # on the updated macOS runner image, cache-bin's restored cargo/rustc
+          # dispatches as rustup-init and fails with "unexpected argument".
+          cache-bin: ${{ runner.os == 'macOS' && 'false' || 'true' }}
+
+      - name: Install Cross-Compilation Tools
+        if: runner.os == 'Linux'
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.rust_target }}
+
+      - name: Install Rust target
+        if: runner.os == 'macOS'
+        run: rustup target add ${{ matrix.rust_target }}
+
+      - name: Build
+        shell: bash
+        run: |
+          release_name="ersatztv-next-${TAG}-${{ matrix.target }}"
+          echo "RELEASE_NAME=${release_name}" >> "$GITHUB_ENV"
+
+          # semver: the target is build metadata, so a release doesn't read as a prerelease
+          export ETV_VERSION="${TAG#v}+${{ matrix.target }}"
+          cargo build --locked --release --all-features --target ${{ matrix.rust_target }}
+          mkdir "$release_name"
+          mv "target/${{ matrix.rust_target }}/release/ersatztv-playout-generator${{ matrix.exe_ext }}" "$release_name/"
+          mv "target/${{ matrix.rust_target }}/release/ersatztv-channel${{ matrix.exe_ext }}" "$release_name/"
+          mv "target/${{ matrix.rust_target }}/release/ersatztv${{ matrix.exe_ext }}" "$release_name/"
+
+      - name: Build libvpl
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # keep in sync with ErsatzTV-ffmpeg native/FFmpeg-Builds (scripts.d/50-onevpl.sh, patches/libvpl)
+          # force LF so the patch applies despite the runner's global core.autocrlf=true
+          git init -q libvpl-src
+          git -C libvpl-src config core.autocrlf false
+          git -C libvpl-src config core.eol lf
+          git -C libvpl-src fetch -q --depth 1 https://github.com/intel/libvpl.git 674d015bcb294bc39fa276e99a652ea045423e82
+          git -C libvpl-src checkout -q FETCH_HEAD
+          git -C libvpl-src apply --verbose "$GITHUB_WORKSPACE"/.github/patches/libvpl/*.patch
+          cmake -S libvpl-src -B libvpl-build -DUSE_MSVC_STATIC_RUNTIME=ON -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+          cmake --build libvpl-build --config Release --target VPL
+          cp libvpl-build/Release/libvpl.dll "$RELEASE_NAME/"
+          cp libvpl-src/LICENSE "$RELEASE_NAME/libvpl-LICENSE.txt"
+          rm -rf libvpl-src libvpl-build
+
+      - name: Archive
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            7z a "${RELEASE_NAME}.zip" "$RELEASE_NAME"
+          else
+            tar czvf "${RELEASE_NAME}.tar.gz" "$RELEASE_NAME"
+          fi
+          rm -r "$RELEASE_NAME"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.target }}
+          path: ersatztv-next-*
 
   release:
     name: Publish release
-    needs: artifacts
+    needs: [version, test, build]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download archives
@@ -32,18 +252,18 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           cd dist
           shopt -s nullglob
           archives=(ersatztv-next-"$TAG"-*.tar.gz ersatztv-next-"$TAG"-*.zip)
-          if (( ${#archives[@]} == 0 )); then
-            echo "no archives were built for $TAG" >&2
+          if (( ${#archives[@]} != 6 )); then
+            echo "expected 6 archives for $TAG, found ${#archives[@]}" >&2
             exit 1
           fi
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "$TAG" \
             --notes "TacoRocket fork build of ErsatzTV next, unsigned. See the tagged commit for what differs from upstream." \
             "${archives[@]}" SHA256SUMS
