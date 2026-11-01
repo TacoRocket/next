@@ -31,6 +31,24 @@ Unlike [the legacy version](https://github.com/ErsatzTV/legacy), this version is
 
 ## Documentation
 
+### Fork: HLS audio handoffs
+
+At a change of program or fallback, this fork keeps the next video's existing timestamp
+anchor and rejects incoming audio packets that would overlap audio already emitted. It
+uses FFmpeg's `noise` bitstream filter with byte mutation disabled and a timestamp-based
+drop expression. The remaining audio keeps its original timestamps; no codec-delay
+constant, audio re-encode for copied streams, or schedule adjustment is added.
+
+This drops whole packets at the incoming boundary. It can remove a small part of the next
+item's audio and leave a gap shorter than one incoming audio packet. It is not a crossfade
+or sample-accurate splice. The worker also marks MPEG-TS continuity-counter resets when
+starting each FFmpeg job, even when timestamps continue across that boundary.
+
+The implementation is in `crates/ersatztv-channel/src/pts_scanner.rs` (separate video/audio
+ends), `crates/ffpipeline/src/output_option.rs` (packet admission), and
+`crates/ffpipeline/src/output_format.rs` (transport signaling). It applies to ordinary
+scheduled items and fallback transitions, independently of the scheduler or provider.
+
 Quickstart guides and reference documentation live at **<https://ersatztv.org/next-docs/>**.
 
 ## Contents

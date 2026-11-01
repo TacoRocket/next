@@ -515,16 +515,8 @@ impl ChannelSession {
             self.state = state;
         }
 
-        let pts_duration = pts_time.map(|p| p.duration);
-
         let result = self
-            .transcode_item(
-                &current_item,
-                realtime,
-                troubleshoot,
-                pts_duration,
-                is_fallback,
-            )
+            .transcode_item(&current_item, realtime, troubleshoot, pts_time, is_fallback)
             .await;
 
         let (finish, is_complete) = match result {
@@ -550,11 +542,11 @@ impl ChannelSession {
                 }
                 let fallback_item = self.fallback_playout_item(&reason, Duration::ZERO).await;
                 // the failed pass may have output segments
-                let pts_duration = match self.pts_scanner.get_last_pts().await {
-                    Ok(scanned_pts_time) => Some(scanned_pts_time.duration),
-                    Err(_) => pts_duration,
+                let pts_time = match self.pts_scanner.get_last_pts().await {
+                    Ok(scanned_pts_time) => Some(scanned_pts_time),
+                    Err(_) => pts_time,
                 };
-                self.transcode_item(&fallback_item, realtime, troubleshoot, pts_duration, true)
+                self.transcode_item(&fallback_item, realtime, troubleshoot, pts_time, true)
                     .await?
             }
         };
@@ -572,7 +564,7 @@ impl ChannelSession {
         current_item: &PlayoutItem,
         realtime: bool,
         troubleshoot: bool,
-        pts_duration: Option<Duration>,
+        pts_time: Option<PtsTime>,
         is_fallback: bool,
     ) -> Result<(OffsetDateTime, bool), ChannelError> {
         let subtitle_mode = if is_fallback {
@@ -690,7 +682,10 @@ impl ChannelSession {
                 segment_template: self.output_segment_template.clone(),
                 troubleshoot,
             },
-            pts_offset: pts_duration.map(|duration| PtsOffset { duration }),
+            pts_offset: pts_time.map(|pts| PtsOffset {
+                duration: pts.duration,
+                audio_end: pts.audio_end,
+            }),
             realtime,
             is_live,
             frame_rate: target_frame_rate(&self.channel_config.normalization)
