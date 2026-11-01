@@ -112,6 +112,10 @@ pub enum VideoFilter {
 pub struct ShaderFilter {
     pub scale: ScaleFilter,
     pub shader: CustomShader,
+    /// The output frame. Native nv12 output needs the picture to fill it.
+    pub frame: Option<FrameSize>,
+    /// Tone-map the HDR10 source inside the stage (see `CustomShaderOptions::hdr_vaapi_lut`).
+    pub hdr: bool,
 }
 
 impl VideoFilterOp for ShaderFilter {
@@ -130,6 +134,8 @@ impl VideoFilterOp for ShaderFilter {
                     ..self.scale.clone()
                 },
                 shader: self.shader.clone(),
+                frame: self.frame,
+                hdr: self.hdr,
             }
             .into(),
         )

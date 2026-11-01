@@ -86,6 +86,22 @@ pub struct VideoFilterOptions {
 pub struct CustomShader {
     hex: std::sync::Arc<str>,
     input_height: Option<u32>,
+    options: CustomShaderOptions,
+}
+
+/// How the custom shader stage runs. Each option applies only where ffmpeg supports it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CustomShaderOptions {
+    /// `scale_vaapi` `mode` for the input height scale, e.g. `default` for the driver's scaler.
+    pub input_scale_mode: Option<String>,
+    /// libplacebo writes nv12 straight into the output frame (`nv12_output=native`) instead of
+    /// going through `scale_vulkan`, when the picture fills the frame.
+    pub native_nv12_output: bool,
+    /// With native nv12 output, point-sample the output chroma instead of a Mitchell filter.
+    pub point_chroma: bool,
+    /// Draw HDR10 sources too: scale to the input height in 10-bit, tone-map with
+    /// `tonemap_vaapi_lut`, then draw. Needs an input height.
+    pub hdr_vaapi_lut: bool,
 }
 
 impl CustomShader {
@@ -98,7 +114,16 @@ impl CustomShader {
         Self {
             hex: hex.into(),
             input_height: None,
+            options: CustomShaderOptions::default(),
         }
+    }
+
+    pub fn with_options(self, options: CustomShaderOptions) -> Self {
+        Self { options, ..self }
+    }
+
+    pub(crate) fn options(&self) -> &CustomShaderOptions {
+        &self.options
     }
 
     /// Scale the picture to this many lines, keeping its shape, before the shader draws it.
@@ -122,9 +147,10 @@ impl std::fmt::Debug for CustomShader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "CustomShader({} bytes, input height {:?})",
+            "CustomShader({} bytes, input height {:?}, {:?})",
             self.hex.len() / 2,
-            self.input_height
+            self.input_height,
+            self.options
         )
     }
 }

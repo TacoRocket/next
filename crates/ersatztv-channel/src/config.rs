@@ -308,6 +308,30 @@ pub struct VideoNormalizationConfig {
     /// draws from the source picture.
     #[schemars(range(min = 2))]
     pub custom_shader_input_height: Option<u32>,
+    /// How the `custom_shader` stage runs. Each option applies only where ffmpeg supports it.
+    #[serde(default)]
+    pub custom_shader_options: CustomShaderOptionsConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CustomShaderOptionsConfig {
+    /// `scale_vaapi` `mode` for the `custom_shader_input_height` scale, e.g. `default` to let the
+    /// driver use its dedicated scaler. Allowed characters: a-z, 0-9, `_`.
+    #[serde(deserialize_with = "deserialize_filter_option")]
+    #[schemars(regex(pattern = r"^[a-z0-9_]+$"))]
+    pub input_scale_mode: Option<String>,
+    /// Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead
+    /// of converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and
+    /// applies only when the picture fills the output frame.
+    pub native_nv12_output: bool,
+    /// With `native_nv12_output`, point-sample the output chroma instead of filtering it with
+    /// Mitchell. Faster; fine chroma detail can alias.
+    pub point_chroma: bool,
+    /// Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with
+    /// `tonemap_vaapi_lut` (fixed Hable), then draw. Needs that ffmpeg filter and an input
+    /// height; otherwise HDR sources play without the shader.
+    pub hdr_vaapi_lut: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]

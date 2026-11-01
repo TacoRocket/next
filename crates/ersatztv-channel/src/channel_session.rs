@@ -27,8 +27,8 @@ use ffpipeline::keyframe_seek::{
     CopySeekRequest, InputStart, Keyframe, KeyframeLocator, plan_copy_seek,
 };
 use ffpipeline::output_settings::{
-    AudioOutputSettings, AudioTranscodeSettings, CopyPolicy, CustomShader, OutputSettings,
-    SubtitleMode, VideoFilterOptions, VideoOutputSettings, VideoTranscodeSettings,
+    AudioOutputSettings, AudioTranscodeSettings, CopyPolicy, CustomShader, CustomShaderOptions,
+    OutputSettings, SubtitleMode, VideoFilterOptions, VideoOutputSettings, VideoTranscodeSettings,
 };
 use ffpipeline::pipeline::{Hz, Kbps, PtsOffset, SEGMENT_SECONDS};
 use ffpipeline::probe::{
@@ -2055,7 +2055,15 @@ fn stream_output_settings(
             deinterlace: video_norm.deinterlace,
             filter_options: VideoFilterOptions {
                 custom_shader: video_norm.custom_shader.as_deref().map(|glsl| {
-                    CustomShader::new(glsl).with_input_height(video_norm.custom_shader_input_height)
+                    let options = &video_norm.custom_shader_options;
+                    CustomShader::new(glsl)
+                        .with_input_height(video_norm.custom_shader_input_height)
+                        .with_options(CustomShaderOptions {
+                            input_scale_mode: options.input_scale_mode.clone(),
+                            native_nv12_output: options.native_nv12_output,
+                            point_chroma: options.point_chroma,
+                            hdr_vaapi_lut: options.hdr_vaapi_lut,
+                        })
                 }),
                 ..video_norm.filters.clone().into()
             },

@@ -217,6 +217,36 @@
       },
       "additionalProperties": false
     },
+    "CustomShaderOptionsConfig": {
+      "type": "object",
+      "properties": {
+        "hdr_vaapi_lut": {
+          "description": "Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with\n`tonemap_vaapi_lut` (fixed Hable), then draw. Needs that ffmpeg filter and an input\nheight; otherwise HDR sources play without the shader.",
+          "type": "boolean",
+          "default": false
+        },
+        "input_scale_mode": {
+          "description": "`scale_vaapi` `mode` for the `custom_shader_input_height` scale, e.g. `default` to let the\ndriver use its dedicated scaler. Allowed characters: a-z, 0-9, `_`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "native_nv12_output": {
+          "description": "Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead\nof converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and\napplies only when the picture fills the output frame.",
+          "type": "boolean",
+          "default": false
+        },
+        "point_chroma": {
+          "description": "With `native_nv12_output`, point-sample the output chroma instead of filtering it with\nMitchell. Faster; fine chroma detail can alias.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "DeinterlaceQsvOptions": {
       "type": "object",
       "properties": {
@@ -811,6 +841,16 @@
           ],
           "format": "uint32",
           "minimum": 2
+        },
+        "custom_shader_options": {
+          "description": "How the `custom_shader` stage runs. Each option applies only where ffmpeg supports it.",
+          "$ref": "#/$defs/CustomShaderOptionsConfig",
+          "default": {
+            "hdr_vaapi_lut": false,
+            "input_scale_mode": null,
+            "native_nv12_output": false,
+            "point_chroma": false
+          }
         },
         "deinterlace": {
           "description": "Deinterlace interlaced sources. Progressive sources are not changed.",

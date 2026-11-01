@@ -99,9 +99,16 @@ impl HwAccel for Vaapi {
                     size: Some(size), ..
                 },
                 shader,
+                frame,
+                hdr,
             }) => LibplaceboShaderVaapi {
                 size: *size,
                 shader: shader.clone(),
+                native_nv12: shader.options().native_nv12_output
+                    && *frame == Some(*size)
+                    && ffmpeg_info
+                        .has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output"),
+                hdr: *hdr,
             }
             .into(),
 
@@ -648,6 +655,10 @@ impl VideoFilterOp for LibplaceboVaapi {
 pub struct LibplaceboShaderVaapi {
     pub(crate) size: FrameSize,
     pub(crate) shader: CustomShader,
+    /// libplacebo writes nv12 straight into the output frame, without `scale_vulkan`
+    pub(crate) native_nv12: bool,
+    /// the input is HDR10, tone-mapped by `tonemap_vaapi_lut` after the input height scale
+    pub(crate) hdr: bool,
 }
 
 impl VideoFilterOp for LibplaceboShaderVaapi {
@@ -661,6 +672,9 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
         state.pixel_format = PixelFormat::Nv12;
         state.surface = FrameSurface::Vaapi;
         state.color = state.color.with_bt709_matrix();
+        if self.hdr {
+            state.apply_tonemap();
+        }
     }
 
     fn required_surface(&self) -> Option<FrameSurface> {
@@ -673,16 +687,46 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
 
     fn as_arg(&self) -> Option<String> {
         // same width as the Tunarr fork: even, at least 2, rounded like Math.round
+        let options = self.shader.options();
         let input_scale = self.shader.input_height().map_or(String::new(), |height| {
             let width = (f64::from(height) * f64::from(self.size.width)
                 / f64::from(self.size.height)
                 / 2.0)
                 .round() as u32
                 * 2;
-            format!("scale_vaapi=w={}:h={height}:format=nv12,", width.max(2))
+            let (format, tonemap) = if self.hdr {
+                ("p010", "tonemap_vaapi_lut,")
+            } else {
+                ("nv12", "")
+            };
+            let mode = options
+                .input_scale_mode
+                .as_deref()
+                .map_or(String::new(), |mode| format!(":mode={mode}"));
+            format!(
+                "scale_vaapi=w={}:h={height}:format={format}{mode},{tonemap}",
+                width.max(2)
+            )
         });
+        let (output_mode, sampling, conversion) = if self.native_nv12 {
+            (
+                "nv12_output=native:",
+                if options.point_chroma {
+                    "chroma_location=topleft:skip_aa=1:extra_opts='plane_downscaler=custom\\:plane_downscaler_kernel=box\\:plane_downscaler_radius=0.5':"
+                } else {
+                    "chroma_location=topleft:extra_opts='plane_downscaler=mitchell':"
+                },
+                "",
+            )
+        } else {
+            (
+                "",
+                "chroma_location=topleft:extra_opts='plane_downscaler=mitchell':",
+                "scale_vulkan=format=nv12,",
+            )
+        };
         Some(format!(
-            "{input_scale}hwmap=derive_device=drm,format=drm_prime,libplacebo=w={}:h={}:format=nv12:colorspace=bt709:range=tv:chroma_location=topleft:extra_opts='plane_downscaler=mitchell':custom_shader_bin={},format=vulkan,scale_vulkan=format=nv12,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1",
+            "{input_scale}hwmap=derive_device=drm,format=drm_prime,libplacebo=w={}:h={}:format=nv12:colorspace=bt709:range=tv:{output_mode}{sampling}custom_shader_bin={},format=vulkan,{conversion}hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1",
             self.size.width,
             self.size.height,
             self.shader.hex(),

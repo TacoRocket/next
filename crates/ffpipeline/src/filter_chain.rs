@@ -908,7 +908,7 @@ impl FilterChain {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
 
@@ -1306,7 +1306,7 @@ mod tests {
         assert!(sec.ends_with("setsar=1,format=yuva420p[v_s0]"), "{sec}");
     }
 
-    fn vaapi_accel_with_tonemap(
+    pub(crate) fn vaapi_accel_with_tonemap(
         driver: VaapiDriver,
         hdr_to_sdr: bool,
         hdr_to_hdr: bool,
@@ -1351,7 +1351,7 @@ mod tests {
         }
     }
 
-    fn ffmpeg_info_with_filters(filters: &[KnownVideoFilter]) -> FfmpegInfo {
+    pub(crate) fn ffmpeg_info_with_filters(filters: &[KnownVideoFilter]) -> FfmpegInfo {
         let mut video_filters = HashSet::new();
         for f in filters {
             video_filters.insert(f.to_string());
@@ -1849,7 +1849,7 @@ mod tests {
         );
     }
 
-    fn vaapi_accel_with_libplacebo(can_import_drm_prime: bool) -> Vaapi {
+    pub(crate) fn vaapi_accel_with_libplacebo(can_import_drm_prime: bool) -> Vaapi {
         Vaapi {
             vulkan_capabilities: Some(VulkanCapabilities {
                 device_index: 0,
@@ -1862,7 +1862,7 @@ mod tests {
         }
     }
 
-    fn ffmpeg_info_with_libplacebo() -> FfmpegInfo {
+    pub(crate) fn ffmpeg_info_with_libplacebo() -> FfmpegInfo {
         FfmpegInfo {
             hwaccels: HashSet::from([KnownHardwareAccel::Vulkan.to_string()]),
             ..ffmpeg_info_with_filters(&[
@@ -2065,8 +2065,112 @@ mod tests {
                 flags: None,
             },
             shader: crate::output_settings::CustomShader::new("//!HOOK MAIN"),
+            frame: Some(FrameSize {
+                width: 1920,
+                height: 1080,
+            }),
+            hdr: false,
         }
         .into()
+    }
+
+    fn tier_shader(source: FrameSize, nv12_output: bool) -> Vec<String> {
+        let VideoFilter::Shader(mut shader) = shader_to_1080p() else {
+            unreachable!()
+        };
+        shader.shader = shader.shader.with_input_height(Some(480)).with_options(
+            crate::output_settings::CustomShaderOptions {
+                input_scale_mode: Some("default".to_owned()),
+                native_nv12_output: true,
+                point_chroma: true,
+                hdr_vaapi_lut: false,
+            },
+        );
+        let ffmpeg_info = FfmpegInfo {
+            video_filter_options: HashMap::from([(
+                KnownVideoFilter::LibPlacebo.to_string(),
+                if nv12_output {
+                    HashSet::from(["nv12_output".to_owned()])
+                } else {
+                    HashSet::new()
+                },
+            )]),
+            ..ffmpeg_info_with_libplacebo()
+        };
+        let state = FrameState {
+            size: source,
+            ..sdr_vaapi_state()
+        };
+        let mut chain = FilterChain::new(vec![PipelineFilter::Video(shader.into())]);
+        chain.evaluate(&state, &ffmpeg_info);
+        chain.resolve(
+            &ffmpeg_info,
+            &Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
+            &VideoFilterOptions::default(),
+            &state,
+            &EncoderTarget {
+                surface: FrameSurface::Vaapi,
+                pixel_format: Some(PixelFormat::Nv12),
+                also_accepts: Vec::new(),
+            },
+        );
+        chain
+            .filters
+            .iter()
+            .filter_map(|f| match f {
+                PipelineFilter::Video(v) => v.as_arg(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shader_tier_options_match_the_native_nv12_path_when_the_picture_fills_the_frame() {
+        let args = tier_shader(
+            FrameSize {
+                width: 1920,
+                height: 1080,
+            },
+            true,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "scale_vaapi=w=854:h=480:format=nv12:mode=default,hwmap=derive_device=drm,format=drm_prime,libplacebo=w=1920:h=1080:format=nv12:colorspace=bt709:range=tv:nv12_output=native:chroma_location=topleft:skip_aa=1:extra_opts='plane_downscaler=custom\\:plane_downscaler_kernel=box\\:plane_downscaler_radius=0.5':custom_shader_bin=2f2f21484f4f4b204d41494e,format=vulkan,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1"
+            ]
+        );
+    }
+
+    #[test]
+    fn shader_keeps_scale_vulkan_when_padded_or_without_nv12_output() {
+        for (source, nv12_output) in [
+            (
+                FrameSize {
+                    width: 1440,
+                    height: 1080,
+                },
+                true,
+            ),
+            (
+                FrameSize {
+                    width: 1920,
+                    height: 1080,
+                },
+                false,
+            ),
+        ] {
+            let args = tier_shader(source, nv12_output);
+            assert!(
+                args[0].starts_with("scale_vaapi=w=")
+                    && args[0].contains(":format=nv12:mode=default,")
+                    && !args[0].contains("nv12_output")
+                    && args[0].contains(
+                        ":chroma_location=topleft:extra_opts='plane_downscaler=mitchell':"
+                    )
+                    && args[0].contains(",format=vulkan,scale_vulkan=format=nv12,"),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

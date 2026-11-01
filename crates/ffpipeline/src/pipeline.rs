@@ -14,7 +14,7 @@ use crate::copy_decision::{
     CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision, video_copy_decision,
 };
 use crate::error::FFPipelineError;
-use crate::ffmpeg_info::FfmpegInfo;
+use crate::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use crate::filter_chain::{EncoderTarget, FilterChain, PipelineFilter};
 use crate::frame_rate::FrameRate;
 use crate::frame_size::{FrameSize, parse_aspect_ratio};
@@ -613,9 +613,21 @@ impl Pipeline {
         };
 
         // the shader replaces the scale where libplacebo can draw it. HDR sources keep the plain
-        // scale and tonemap.
+        // scale and tonemap, except HDR10 when the stage tone-maps it itself.
+        let frame = video_transcode.size;
+        let shader_tonemaps = video_transcode
+            .filter_options
+            .custom_shader
+            .as_ref()
+            .is_some_and(|shader| {
+                shader.options().hdr_vaapi_lut
+                    && shader.input_height().is_some()
+                    && matches!(hdr, HdrFormat::Hdr10 | HdrFormat::Pq)
+                    && initial_state.pixel_format.bit_depth() == 10
+                    && ffmpeg_info.has_video_filter(&KnownVideoFilter::TonemapVaapiLut)
+            });
         let scale = match &video_transcode.filter_options.custom_shader {
-            Some(_) if hdr != HdrFormat::None => {
+            Some(_) if hdr != HdrFormat::None && !shader_tonemaps => {
                 log::debug!("{hdr:?} source; not drawing the custom shader");
                 PipelineFilter::Video(scale.into())
             }
@@ -625,6 +637,8 @@ impl Pipeline {
                         ShaderFilter {
                             scale,
                             shader: shader.clone(),
+                            frame,
+                            hdr: shader_tonemaps,
                         }
                         .into(),
                     )
@@ -638,6 +652,9 @@ impl Pipeline {
             },
             None => PipelineFilter::Video(scale.into()),
         };
+
+        let shader_tonemaps =
+            shader_tonemaps && matches!(&scale, PipelineFilter::Video(VideoFilter::Shader(_)));
 
         let geometry_filters = [
             PipelineFilter::Video(
@@ -680,7 +697,10 @@ impl Pipeline {
             .into(),
         );
 
-        if tonemap_first {
+        if shader_tonemaps {
+            // the shader stage tone-maps before it draws
+            filters.extend(geometry_filters);
+        } else if tonemap_first {
             filters.push(tonemap);
             filters.extend(geometry_filters);
         } else {
@@ -1840,6 +1860,78 @@ mod tests {
             reports_folder: None,
             report_id: None,
         }
+    }
+
+    fn hdr10_shader_args(with_lut: bool) -> String {
+        use crate::filter_chain::tests::{
+            ffmpeg_info_with_libplacebo, vaapi_accel_with_libplacebo,
+        };
+        let mut input = multichannel_ac3_input("main.mkv");
+        for probe in [
+            &mut input.video_input.probe_result,
+            &mut input.audio_input.probe_result,
+        ] {
+            if let crate::probe::ProbeResultStream::Video(video) = &mut probe.streams[0] {
+                video.codec = "hevc".to_owned();
+                video.width = Some(1920);
+                video.height = Some(1080);
+                video.pix_fmt = "yuv420p10le".to_owned();
+                video.color_params = crate::probe::ProbeResultColorParams {
+                    color_range: Some("tv".to_owned()),
+                    color_space: Some("bt2020nc".to_owned()),
+                    color_transfer: Some("smpte2084".to_owned()),
+                    color_primaries: Some("bt2020".to_owned()),
+                    has_hdr10_metadata: true,
+                };
+            }
+        }
+        let mut output = OutputSettings {
+            accel: Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
+            ..stereo_output()
+        };
+        output.video.transcode.size = Some(FrameSize {
+            width: 1920,
+            height: 1080,
+        });
+        output.video.transcode.filter_options.custom_shader = Some(
+            crate::output_settings::CustomShader::new("//!HOOK MAIN")
+                .with_input_height(Some(480))
+                .with_options(crate::output_settings::CustomShaderOptions {
+                    hdr_vaapi_lut: true,
+                    ..Default::default()
+                }),
+        );
+        let mut ffmpeg_info = ffmpeg_info_with_libplacebo();
+        ffmpeg_info
+            .hwaccels
+            .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
+        if with_lut {
+            ffmpeg_info
+                .video_filters
+                .insert(KnownVideoFilter::TonemapVaapiLut.to_string());
+        }
+        let mut pipeline = Pipeline::full(&ffmpeg_info, input, output).unwrap();
+        pipeline.optimize();
+        pipeline.args().join(" ")
+    }
+
+    #[test]
+    fn hdr10_shader_tone_maps_in_the_stage_and_skips_the_separate_tonemap() {
+        let args = hdr10_shader_args(true);
+        assert!(
+            args.contains(
+                "scale_vaapi=w=854:h=480:format=p010,tonemap_vaapi_lut,hwmap=derive_device=drm"
+            ),
+            "{args}"
+        );
+        assert_eq!(args.matches("tonemap").count(), 1, "{args}");
+    }
+
+    #[test]
+    fn hdr10_without_the_lut_filter_skips_the_shader_and_tone_maps() {
+        let args = hdr10_shader_args(false);
+        assert!(!args.contains("custom_shader_bin"), "{args}");
+        assert!(args.contains("tonemap"), "{args}");
     }
 
     #[test]

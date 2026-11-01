@@ -28,7 +28,8 @@ static KNOWN_FILTERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 
 /// filter presence alone cannot tell a patched build from upstream, so these
 /// filters also get their options probed
-static OPTION_PROBED_FILTERS: &[KnownVideoFilter] = &[KnownVideoFilter::VppQsv];
+static OPTION_PROBED_FILTERS: &[KnownVideoFilter] =
+    &[KnownVideoFilter::VppQsv, KnownVideoFilter::LibPlacebo];
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownHardwareAccel {
@@ -93,6 +94,9 @@ pub enum KnownVideoFilter {
     TonemapOpencl,
     #[strum(serialize = "tonemap_vaapi")]
     TonemapVaapi,
+    /// Fixed Hable HDR10 to SDR through a VAAPI 3D LUT. Only in patched ffmpeg builds.
+    #[strum(serialize = "tonemap_vaapi_lut")]
+    TonemapVaapiLut,
     #[strum(serialize = "transpose_cuda")]
     TransposeCuda,
     #[strum(serialize = "transpose_vaapi")]
