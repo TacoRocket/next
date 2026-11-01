@@ -654,6 +654,8 @@ impl Pipeline {
 
         let tonemap = PipelineFilter::Video(
             ToneMapFilter {
+                prefer_vaapi_lut: video_transcode.hdr_vaapi_lut
+                    && crate::accel::vaapi::hdr10_lut_eligible(video_stream),
                 algorithm: video_transcode.filter_options.tonemap.tonemap.clone(),
                 output_format: match video_transcode.bit_depth {
                     10 => PixelFormat::Yuv420p10le,
@@ -1943,6 +1945,7 @@ mod tests {
                 transcode: crate::output_settings::VideoTranscodeSettings {
                     format: EncodeFormat::H264,
                     bit_depth: 8,
+                    hdr_vaapi_lut: false,
                     bitrate: Some(Kbps(2000)),
                     buffer: Some(Kbps(4000)),
                     size: Some(FrameSize {
@@ -1994,6 +1997,52 @@ mod tests {
             }
         }
         input
+    }
+
+    #[test]
+    fn hdr10_lut_matches_legacy_input_selection() {
+        let input = hdr10_input();
+        let crate::probe::ProbeResultStream::Video(video) =
+            &input.video_input.probe_result.streams[0]
+        else {
+            panic!("HDR fixture must contain video");
+        };
+        assert!(crate::accel::vaapi::hdr10_lut_eligible(video));
+        for profile in [5, 7, 8] {
+            let mut other = video.clone();
+            other.dv_profile = Some(profile);
+            assert!(!crate::accel::vaapi::hdr10_lut_eligible(&other));
+        }
+        for (codec, profile) in [
+            ("dvhe", "Main 10"),
+            ("dvh1", "Main 10"),
+            ("hevc", "Dolby Vision Profile 7"),
+        ] {
+            let mut other = video.clone();
+            other.codec = codec.to_owned();
+            other.profile = profile.to_owned();
+            assert!(!crate::accel::vaapi::hdr10_lut_eligible(&other));
+        }
+        for (field, value) in [
+            ("range", None),
+            ("range", Some("pc")),
+            ("transfer", Some("arib-std-b67")),
+            ("primaries", Some("bt709")),
+            ("matrix", Some("bt2020c")),
+            ("pixel", Some("yuv420p")),
+        ] {
+            let mut other = video.clone();
+            let value = value.map(str::to_owned);
+            match field {
+                "range" => other.color_params.color_range = value,
+                "transfer" => other.color_params.color_transfer = value,
+                "primaries" => other.color_params.color_primaries = value,
+                "matrix" => other.color_params.color_space = value,
+                "pixel" => other.pix_fmt = value.unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(!crate::accel::vaapi::hdr10_lut_eligible(&other), "{field}");
+        }
     }
 
     fn degradation_codes(pipeline: &Pipeline) -> Vec<DegradationCode> {

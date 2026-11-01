@@ -54,6 +54,32 @@ Finally, there are configuration examples under [examples](examples):
 - [channel_copy.json](examples/channel_copy.json): an example channel configuration that copies video and audio when the source format allows it.
 - [lineup.json](examples/lineup.json): an example lineup configuration, linking to all channels, and describing where to write the normalized content and how to serve it over HTTP.
 
+## Fork option: VAAPI HDR10 LUT tone mapping
+
+Set `normalization.video.hdr_vaapi_lut` to `true` in `channel.json` to prefer
+`tonemap_vaapi_lut` for 8-bit output. This ports the Tunarr fork's optional
+fixed-Hable lookup-table conversion to the ordinary VAAPI pipeline; CRT is not
+required. The filter runs on VAAPI surfaces, avoiding the libplacebo path's
+Vulkan handoffs.
+
+Selection requires known 10-bit input, limited (`tv`) range, BT.2020 primaries,
+BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
+Frames must already be on VAAPI in P010 format; other surface/format paths keep
+the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
+the filter is absent, or the input/output is outside that scope, the existing
+mapping path remains in use. This option converts HDR to SDR; it does not disable
+tone mapping or preserve HDR.
+
+The fixed 1000-nit Hable curve can render highlights and brightness differently
+from libplacebo. Compare the picture on your media before enabling it. The
+selection and surface handling live in `crates/ffpipeline/src/accel/vaapi.rs`;
+`pipeline.rs` checks the original probe metadata before HDR classification loses
+range and Dolby Vision detail. This fork extension keeps the upstream channel
+schema URI; integrators must use a fork worker that supports the field.
+
+The default is `false`. The preference only chooses the mapper when HDR is being
+converted to SDR; it has no effect when video is copied or HDR is preserved.
+
 ## Getting Started
 
 ### Prerequisites

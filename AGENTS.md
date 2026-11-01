@@ -277,6 +277,12 @@ Exception: a change that only touches annotations (`description`, `title`, `exam
 existing behavior) does not bump. In Rust that means editing `///` doc comments on schema types. Regenerate the schema
 and commit it, but leave `SUPPORTED_SCHEMA`, `$id` and the example `version`s alone.
 
+Fork exception: additive fork-only channel options keep the upstream schema URI. Do not reserve
+an upstream compatible version for these extensions. Document the required fork release; Tunarr
+pins its bundled worker exactly. An explicit worker-path override can bypass that pin, so its
+operator must supply a worker supporting the emitted fields. Upstream contract changes still
+follow the versioning rule above.
+
 Every property and every enum value needs a description: a `///` comment on the field or variant, or in
 `schema/playout.json` a `description` (for a plain `enum`, one on the enum that covers its values).
 `crates/ersatztv-core/tests/schema_descriptions.rs` fails otherwise. The docs site generates its reference from these

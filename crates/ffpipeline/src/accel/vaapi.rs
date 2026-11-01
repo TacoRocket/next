@@ -23,6 +23,20 @@ use crate::video_filter::{
     ToneMapFilter, TransposeDir, TransposeFilter, VideoFilter, VideoFilterOp,
 };
 
+// FrameState collapses DV profiles other than 5 into PQ/HDR10 and drops range.
+// Select against the original probe metadata before that information is lost.
+pub(crate) fn hdr10_lut_eligible(video: &ProbeResultVideoStream) -> bool {
+    let color = &video.color_params;
+    PixelFormat::parse(&video.pix_fmt).bit_depth() == 10
+        && video.dv_profile.is_none()
+        && !matches!(video.codec.as_str(), "dvhe" | "dvh1")
+        && !video.profile.to_ascii_lowercase().contains("dolby vision")
+        && color.color_transfer.as_deref() == Some("smpte2084")
+        && color.color_primaries.as_deref() == Some("bt2020")
+        && color.color_space.as_deref() == Some("bt2020nc")
+        && color.color_range.as_deref() == Some("tv")
+}
+
 #[derive(Debug, Clone, PartialEq, strum::Display, Serialize)]
 pub enum VaapiDriver {
     #[strum(serialize = "iHD")]
@@ -188,6 +202,18 @@ impl HwAccel for Vaapi {
                     mode: filter_options.deinterlace_vaapi.mode.clone(),
                 }
                 .into()
+            }
+
+            VideoFilter::ToneMap(ToneMapFilter {
+                prefer_vaapi_lut: true,
+                output_format: format,
+                ..
+            }) if self.output_format(format) == HwPixelFormat::Nv12
+                && current_state.surface == FrameSurface::Vaapi
+                && current_state.pixel_format == PixelFormat::P010le
+                && ffmpeg_info.has_video_filter(&KnownVideoFilter::TonemapVaapiLut) =>
+            {
+                TonemapVaapiLut.into()
             }
 
             VideoFilter::ToneMap(ToneMapFilter {
@@ -638,6 +664,29 @@ impl VideoFilterOp for TonemapVaapi {
             self.output_format.as_arg()
         )
         .into()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TonemapVaapiLut;
+
+impl VideoFilterOp for TonemapVaapiLut {
+    fn evaluate(&self, _state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
+        None
+    }
+
+    fn apply_to(&self, state: &mut FrameState) {
+        state.pixel_format = PixelFormat::Nv12;
+        state.surface = FrameSurface::Vaapi;
+        state.apply_tonemap();
+    }
+
+    fn required_surface(&self) -> Option<FrameSurface> {
+        Some(FrameSurface::Vaapi)
+    }
+
+    fn as_arg(&self) -> Option<String> {
+        Some(String::from("tonemap_vaapi_lut"))
     }
 }
 
