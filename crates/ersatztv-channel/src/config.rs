@@ -90,9 +90,9 @@ pub struct FfmpegConfig {
     /// subfolder with the ffmpeg output, the channel config and media info. Unset writes none.
     #[serde(default)]
     pub reports_folder: Option<String>,
-    /// File the channel rewrites as each item starts, listing where its last few items run other
-    /// than as configured (hardware it could not use, a custom shader it did not draw). Keep it out
-    /// of the output folder, which is served to clients. Unset writes none.
+    /// File the channel rewrites as each item starts, listing every item that hasn't ended and
+    /// where each runs other than as configured (hardware it could not use, a custom shader it did
+    /// not draw). Keep it out of the output folder, which is served to clients. Unset writes none.
     #[serde(default)]
     pub degradation_report: Option<String>,
 }

@@ -6,9 +6,10 @@ use ffpipeline::degradation::{DegradationCode, PipelineDegradation};
 use serde::Serialize;
 use time::OffsetDateTime;
 
-/// Items kept in the report. The channel transcodes a little ahead of what viewers see, so the
-/// file has to reach back past the newest item; a few cover any realistic lead.
-const RETAINED_ITEMS: usize = 8;
+/// A guard on the report's size, not its retention rule. Items are kept until they end on the
+/// playout clock, so the one on air stays while short clips are prepared ahead of it; this many
+/// unended items would need clips of about a tenth of a second across a 30 second work-ahead.
+const MAX_ITEMS: usize = 256;
 
 /// Writes `ffmpeg.degradation_report`: where each recent item runs other than as configured.
 ///
@@ -53,13 +54,16 @@ impl DegradationReport {
         }
     }
 
+    /// `now` stamps when a degradation began; `playout_now` is the playout clock the items'
+    /// start and finish are on, which a virtual start offsets from the wall clock.
     pub async fn record(
         &mut self,
         item: &PlayoutItem,
         degradations: &[PipelineDegradation],
         now: OffsetDateTime,
+        playout_now: OffsetDateTime,
     ) {
-        self.push(item, degradations, now);
+        self.push(item, degradations, now, playout_now);
         self.write().await;
     }
 
@@ -68,6 +72,7 @@ impl DegradationReport {
         item: &PlayoutItem,
         degradations: &[PipelineDegradation],
         now: OffsetDateTime,
+        playout_now: OffsetDateTime,
     ) {
         // a rebuilt item (a retry, or a restart mid-item) replaces its entry and keeps its times
         let previous = match self.items.back() {
@@ -94,7 +99,8 @@ impl DegradationReport {
                 })
                 .collect(),
         });
-        while self.items.len() > RETAINED_ITEMS {
+        self.items.retain(|i| i.finish > playout_now);
+        while self.items.len() > MAX_ITEMS {
             self.items.pop_front();
         }
     }
@@ -158,8 +164,8 @@ mod tests {
     fn a_degradation_keeps_its_start_across_consecutive_items() {
         let mut report = report();
         let decode = degradation(DegradationCode::HardwareDecodeUnavailable);
-        report.push(&item("a", T0, T1), std::slice::from_ref(&decode), T0);
-        report.push(&item("b", T1, T2), std::slice::from_ref(&decode), T1);
+        report.push(&item("a", T0, T1), std::slice::from_ref(&decode), T0, T0);
+        report.push(&item("b", T1, T2), std::slice::from_ref(&decode), T1, T0);
 
         assert_eq!(report.items[1].degradations[0].since, T0);
     }
@@ -168,9 +174,9 @@ mod tests {
     fn an_item_without_it_resets_the_start() {
         let mut report = report();
         let decode = degradation(DegradationCode::HardwareDecodeUnavailable);
-        report.push(&item("a", T0, T1), std::slice::from_ref(&decode), T0);
-        report.push(&item("b", T1, T2), &[], T1);
-        report.push(&item("c", T2, T3), std::slice::from_ref(&decode), T2);
+        report.push(&item("a", T0, T1), std::slice::from_ref(&decode), T0, T0);
+        report.push(&item("b", T1, T2), &[], T1, T0);
+        report.push(&item("c", T2, T3), std::slice::from_ref(&decode), T2, T0);
 
         assert_eq!(report.items[2].degradations[0].since, T2);
     }
@@ -179,22 +185,52 @@ mod tests {
     fn a_rebuilt_item_replaces_its_entry_and_keeps_its_start() {
         let mut report = report();
         let encode = degradation(DegradationCode::HardwareEncodeUnavailable);
-        report.push(&item("a", T0, T1), std::slice::from_ref(&encode), T0);
-        report.push(&item("a", T0, T1), std::slice::from_ref(&encode), T1);
+        report.push(&item("a", T0, T1), std::slice::from_ref(&encode), T0, T0);
+        report.push(&item("a", T0, T1), std::slice::from_ref(&encode), T1, T0);
 
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].degradations[0].since, T0);
     }
 
     #[test]
-    fn only_the_last_few_items_are_kept() {
+    fn short_clips_prepared_ahead_keep_the_one_on_air() {
         let mut report = report();
-        for i in 0..RETAINED_ITEMS + 3 {
-            report.push(&item(&format!("item-{i}"), T0, T1), &[], T0);
+        let decode = degradation(DegradationCode::HardwareDecodeUnavailable);
+        let on_air = T0 + time::Duration::seconds(1);
+        // nine three-second clips, the last starting 24 seconds ahead of the playout clock
+        for i in 0..9 {
+            let start = T0 + time::Duration::seconds(3 * i);
+            let clip = item(
+                &format!("clip-{i}"),
+                start,
+                start + time::Duration::seconds(3),
+            );
+            report.push(&clip, std::slice::from_ref(&decode), T0, on_air);
         }
 
-        assert_eq!(report.items.len(), RETAINED_ITEMS);
-        assert_eq!(report.items[0].id, "item-3");
+        assert_eq!(report.items.len(), 9);
+        assert_eq!(report.items[0].id, "clip-0");
+    }
+
+    #[test]
+    fn items_that_have_ended_are_dropped() {
+        let mut report = report();
+        report.push(&item("a", T0, T1), &[], T0, T0);
+        report.push(&item("b", T1, T2), &[], T1, T1 + time::Duration::minutes(1));
+
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].id, "b");
+    }
+
+    #[test]
+    fn the_report_size_is_bounded() {
+        let mut report = report();
+        for i in 0..MAX_ITEMS + 10 {
+            report.push(&item(&format!("item-{i}"), T0, T1), &[], T0, T0);
+        }
+
+        assert_eq!(report.items.len(), MAX_ITEMS);
+        assert_eq!(report.items[0].id, "item-10");
     }
 
     #[tokio::test]
@@ -207,6 +243,7 @@ mod tests {
             .record(
                 &item("a", T0, T1),
                 &[degradation(DegradationCode::CustomShaderHdrSkipped)],
+                T0,
                 T0,
             )
             .await;

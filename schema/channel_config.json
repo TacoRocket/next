@@ -313,7 +313,7 @@
       "type": "object",
       "properties": {
         "degradation_report": {
-          "description": "File the channel rewrites as each item starts, listing where its last few items run other\nthan as configured (hardware it could not use, a custom shader it did not draw). Keep it out\nof the output folder, which is served to clients. Unset writes none.",
+          "description": "File the channel rewrites as each item starts, listing every item that hasn't ended and\nwhere each runs other than as configured (hardware it could not use, a custom shader it did\nnot draw). Keep it out of the output folder, which is served to clients. Unset writes none.",
           "type": [
             "string",
             "null"

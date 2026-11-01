@@ -862,11 +862,13 @@ impl ChannelSession {
 
         // the fallback item is not what the playout scheduled, so it has nothing to report
         if !is_fallback && let Some(report) = self.degradation_report.as_mut() {
+            let now = OffsetDateTime::now_utc();
             report
                 .record(
                     current_item,
                     pipeline_result.degradations(),
-                    OffsetDateTime::now_utc(),
+                    now,
+                    now + self.start_time_offset,
                 )
                 .await;
         }
