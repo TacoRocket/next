@@ -27,6 +27,7 @@
       "mode": "transcode",
       "format": "h264",
       "bit_depth": 8,
+      "tone_mapping": "on",
       "width": 1920,
       "height": 1080,
       "bitrate_kbps": 2000,

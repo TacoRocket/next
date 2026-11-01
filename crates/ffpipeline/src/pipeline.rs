@@ -29,7 +29,7 @@ use crate::input::{
 };
 use crate::output_option::OutputOption;
 use crate::output_settings::{
-    OutputSettings, ScalingMode, SubtitleMode, VideoFilterOptions, YadifOptions,
+    OutputSettings, ScalingMode, SubtitleMode, ToneMappingMode, VideoFilterOptions, YadifOptions,
 };
 use crate::overlay_filter::{
     FramePoint, OverlayFilter, OverlayKind, OverlaySource, SoftwareOverlay,
@@ -580,6 +580,32 @@ impl Pipeline {
             _ => HdrFormat::None,
         };
 
+        let hdr_preservation_issue = if video_encoder == VideoEncoder::Copy {
+            None
+        } else if hdr == HdrFormat::Dv5 {
+            Some("Dolby Vision profile 5 cannot be preserved by this transcode path")
+        } else if hdr != HdrFormat::None && video_transcode.bit_depth != 10 {
+            Some("HDR preservation needs 10-bit output, but this profile produces 8-bit video")
+        } else {
+            None
+        };
+        let tone_mapping = match (video_transcode.tone_mapping, hdr_preservation_issue) {
+            (ToneMappingMode::On, _) => true,
+            (ToneMappingMode::SdrFallback, Some(reason)) => {
+                degradations.add(
+                    DegradationCode::HdrToneMapped,
+                    format!("Converted to SDR: {reason}."),
+                );
+                true
+            }
+            (ToneMappingMode::Off, Some(reason)) => {
+                return Err(FFPipelineError::HdrPreservationUnsupported(format!(
+                    "{reason}. Tone mapping is Off; select On or SDR fallback to play this item."
+                )));
+            }
+            _ => false,
+        };
+
         let initial_state = FrameState {
             size: FrameSize {
                 width: video_stream
@@ -680,7 +706,8 @@ impl Pipeline {
             .custom_shader
             .as_ref()
             .is_some_and(|shader| {
-                shader.options().hdr_vaapi_lut
+                tone_mapping
+                    && shader.options().hdr_vaapi_lut
                     && shader.input_height().is_some()
                     && matches!(hdr, HdrFormat::Hdr10 | HdrFormat::Pq)
                     && initial_state.pixel_format.bit_depth() == 10
@@ -767,8 +794,7 @@ impl Pipeline {
             .into(),
         );
 
-        if shader_tonemaps {
-            // the shader stage tone-maps before it draws
+        if shader_tonemaps || !tone_mapping {
             filters.extend(geometry_filters);
         } else if tonemap_first {
             filters.push(tonemap);
@@ -1945,6 +1971,7 @@ mod tests {
                 transcode: crate::output_settings::VideoTranscodeSettings {
                     format: EncodeFormat::H264,
                     bit_depth: 8,
+                    tone_mapping: ToneMappingMode::On,
                     hdr_vaapi_lut: false,
                     bitrate: Some(Kbps(2000)),
                     buffer: Some(Kbps(4000)),
@@ -2086,6 +2113,41 @@ mod tests {
         let mut pipeline = Pipeline::full(&ffmpeg_info, input, output).unwrap();
         pipeline.optimize();
         pipeline
+    }
+
+    #[test]
+    fn incompatible_hdr_output_obeys_fallback_or_strict_mode() {
+        for dv5 in [false, true] {
+            for mode in [
+                ToneMappingMode::On,
+                ToneMappingMode::SdrFallback,
+                ToneMappingMode::Off,
+            ] {
+                let mut input = hdr10_input();
+                if dv5
+                    && let crate::probe::ProbeResultStream::Video(video) =
+                        &mut input.video_input.probe_result.streams[0]
+                {
+                    video.dv_profile = Some(5);
+                }
+                let mut output = stereo_output();
+                output.video.transcode.tone_mapping = mode;
+                output.video.transcode.bit_depth = if dv5 { 10 } else { 8 };
+                let result = Pipeline::full(&FfmpegInfo::default(), input, output);
+                if mode == ToneMappingMode::Off {
+                    assert!(matches!(
+                        result,
+                        Err(FFPipelineError::HdrPreservationUnsupported(_))
+                    ));
+                } else {
+                    let pipeline = result.unwrap();
+                    assert_eq!(
+                        degradation_codes(&pipeline).contains(&DegradationCode::HdrToneMapped),
+                        mode == ToneMappingMode::SdrFallback
+                    );
+                }
+            }
+        }
     }
 
     #[test]

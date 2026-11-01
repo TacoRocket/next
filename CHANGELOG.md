@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [Unreleased]
 
 ### Added
+- Fork channel option `normalization.video.tone_mapping`: `on` (default), `sdr_fallback`, or `off`. SDR fallback preserves compatible HDR and converts unsupported items with an API status reason; Off remains strict. Copied video is unchanged. Keeps upstream schema URI 0.1.3; requires a compatible fork worker.
 - Optional VAAPI HDR10 tone mapping with `normalization.video.hdr_vaapi_lut: true` (default false). Uses the fork's fixed-Hable LUT filter for known limited-range 10-bit BT.2020/PQ input without Dolby Vision, when producing 8-bit output. Missing filters and other inputs retain the existing mapping path.
 
 ### Fixed

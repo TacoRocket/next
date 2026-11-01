@@ -552,6 +552,26 @@
         }
       }
     },
+    "ToneMappingMode": {
+      "title": "ToneMappingMode",
+      "oneOf": [
+        {
+          "description": "Convert HDR to SDR using the existing mapper.",
+          "type": "string",
+          "const": "on"
+        },
+        {
+          "description": "Preserve compatible HDR; otherwise convert to SDR and report the reason.",
+          "type": "string",
+          "const": "sdr_fallback"
+        },
+        {
+          "description": "Never tone-map. Unsupported HDR output reports an error and uses the configured fallback.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
     "TonemapOpenclOptions": {
       "type": "object",
       "properties": {
@@ -925,6 +945,11 @@
           "description": "How a source with a different aspect ratio fits `width` and `height`.",
           "$ref": "#/$defs/ScalingMode",
           "default": "scale_and_pad"
+        },
+        "tone_mapping": {
+          "description": "HDR conversion policy for transcoded video. Defaults to on. Preserving HDR requires\ncompatible 10-bit output and an HDR-capable player/display; copied video is unchanged.",
+          "$ref": "#/$defs/ToneMappingMode",
+          "default": "on"
         },
         "vaapi_device": {
           "description": "VAAPI render node. Unset uses `/dev/dri/renderD128`.",

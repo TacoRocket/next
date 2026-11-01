@@ -67,18 +67,48 @@ BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
 Frames must already be on VAAPI in P010 format; other surface/format paths keep
 the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
 the filter is absent, or the input/output is outside that scope, the existing
-mapping path remains in use. This option converts HDR to SDR; it does not disable
+mapping path remains in use. A requested but unavailable filter logs one warning
+at worker startup. This option converts HDR to SDR; it does not disable
 tone mapping or preserve HDR.
 
 The fixed 1000-nit Hable curve can render highlights and brightness differently
 from libplacebo. Compare the picture on your media before enabling it. The
 selection and surface handling live in `crates/ffpipeline/src/accel/vaapi.rs`;
 `pipeline.rs` checks the original probe metadata before HDR classification loses
-range and Dolby Vision detail. This fork extension keeps the upstream channel
+range and Dolby Vision detail. The CRT shader keeps its existing, separate HDR
+eligibility check; this option does not change that path. This fork extension keeps the upstream channel
 schema URI; integrators must use a fork worker that supports the field.
 
 The default is `false`. The preference only chooses the mapper when HDR is being
 converted to SDR; it has no effect when video is copied or HDR is preserved.
+
+## Fork option: HDR tone mapping policy
+
+Set `normalization.video.tone_mapping` in `channel.json`:
+
+- `"on"` (default): convert HDR to SDR, preserving existing behavior.
+- `"sdr_fallback"`: preserve compatible HDR. If the item cannot be preserved
+  (Dolby Vision profile 5 or HDR with effective 8-bit output), convert it to SDR
+  and report `hdr_tone_mapped` with the reason.
+- `"off"`: never tone-map. An incompatible HDR item reports
+  `hdr_preservation_unsupported` and uses the configured error/fallback picture.
+
+Preserving HDR requires 10-bit output and an HDR-capable player/display. SDR
+programs can still use 8-bit profiles in any mode. These decisions use the actual
+source and effective output, including MPEG-2's 8-bit limit. Copied video retains
+its existing behavior. Dolby Vision metadata preservation is not promised.
+SDR-only custom shaders are skipped while HDR is preserved.
+
+Reasons are written to `ffmpeg.degradation_report` for the scheduled item. Tunarr
+exposes them in its existing sessions status APIs; no new status UI is included.
+`hdr_vaapi_lut` only selects a conversion method when this policy actually maps
+HDR to SDR. Changing the configuration applies to a new worker session.
+
+This fork extension keeps upstream channel schema URI `0.1.3`; use a compatible
+fork worker. The bundled Tunarr worker is pinned, but an explicit worker-path
+override must also support these fields. HDR signaling, display switching and
+subtitle brightness on physical clients remain release checks; producing tagged
+10-bit segments alone does not establish client compatibility.
 
 ## Getting Started
 

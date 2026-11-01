@@ -245,6 +245,29 @@ impl From<&AudioLoudnessConfig> for ffpipeline::output_settings::AudioLoudnessSe
     }
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(title = "ToneMappingMode")]
+pub enum ToneMappingMode {
+    /// Convert HDR to SDR using the existing mapper.
+    #[default]
+    On,
+    /// Preserve compatible HDR; otherwise convert to SDR and report the reason.
+    SdrFallback,
+    /// Never tone-map. Unsupported HDR output reports an error and uses the configured fallback.
+    Off,
+}
+
+impl From<ToneMappingMode> for ffpipeline::output_settings::ToneMappingMode {
+    fn from(value: ToneMappingMode) -> Self {
+        match value {
+            ToneMappingMode::On => Self::On,
+            ToneMappingMode::SdrFallback => Self::SdrFallback,
+            ToneMappingMode::Off => Self::Off,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct VideoNormalizationConfig {
     /// Whether to transcode every item or copy items whose codec allows it. In `copy` mode, items
@@ -264,6 +287,10 @@ pub struct VideoNormalizationConfig {
         deserialize_with = "deserialize_bit_depth"
     )]
     pub bit_depth: u8,
+    /// HDR conversion policy for transcoded video. Defaults to on. Preserving HDR requires
+    /// compatible 10-bit output and an HDR-capable player/display; copied video is unchanged.
+    #[serde(default)]
+    pub tone_mapping: ToneMappingMode,
     /// Prefer the fixed-Hable VAAPI LUT for eligible HDR10 to 8-bit SDR conversions.
     /// Requires the patched FFmpeg filter; unsupported inputs retain the existing mapper.
     #[serde(default)]

@@ -11,6 +11,10 @@ pub enum DegradationCode {
     HardwareDecodeUnavailable,
     HardwareEncodeUnavailable,
     HardwareTonemapUnavailable,
+    /// SDR fallback converted an item whose HDR output could not be preserved.
+    HdrToneMapped,
+    /// Strict Off rejected an item whose HDR output could not be preserved.
+    HdrPreservationUnsupported,
     /// `vaapi_low_power: "always"` and the device has no low-power entrypoint for this output
     VaapiLowPowerUnavailable,
     /// The custom shader is not drawn on this HDR source

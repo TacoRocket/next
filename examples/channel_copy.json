@@ -23,6 +23,7 @@
       "copy_formats": ["h264", "hevc"],
       "format": "h264",
       "bit_depth": 8,
+      "tone_mapping": "on",
       "bitrate_kbps": 4000,
       "buffer_kbps": 8000,
       "accel": null

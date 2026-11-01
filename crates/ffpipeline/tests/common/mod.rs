@@ -1426,6 +1426,7 @@ pub fn build_output(dir: &Path, params: TestOutputParams) -> OutputSettings {
             transcode: VideoTranscodeSettings {
                 format: params.video_format,
                 bit_depth: params.bit_depth,
+                tone_mapping: ffpipeline::output_settings::ToneMappingMode::On,
                 hdr_vaapi_lut: false,
                 bitrate: params.video_bitrate,
                 buffer: params.video_buffer,
