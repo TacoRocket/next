@@ -2091,6 +2091,28 @@ mod tests {
     }
 
     #[test]
+    fn shader_input_height_scales_down_first_keeping_the_shape() {
+        let VideoFilter::Shader(mut shader) = shader_to_1080p() else {
+            unreachable!()
+        };
+        shader.shader = shader.shader.with_input_height(Some(480));
+        let args = resolve_shader_vaapi(
+            FrameSize {
+                width: 1920,
+                height: 1080,
+            },
+            vec![shader.into()],
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(
+            args[0].starts_with(
+                "scale_vaapi=w=854:h=480:format=nv12,hwmap=derive_device=drm,format=drm_prime,libplacebo=w=1920:h=1080:"
+            ),
+            "{args:?}"
+        );
+    }
+
+    #[test]
     fn shader_draws_when_the_source_is_already_the_output_size() {
         let args = resolve_shader_vaapi(
             FrameSize {

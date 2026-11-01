@@ -303,6 +303,11 @@ pub struct VideoNormalizationConfig {
     /// ffmpeg has `libplacebo` and a Vulkan device on the same GPU can import its frames. Skipped
     /// for HDR sources. Elsewhere the channel plays without it.
     pub custom_shader: Option<String>,
+    /// Lines to scale the picture to, keeping its shape, before `custom_shader` draws it at the
+    /// output size. For shaders that soften the picture to a lower resolution, e.g. `480`. Unset
+    /// draws from the source picture.
+    #[schemars(range(min = 2))]
+    pub custom_shader_input_height: Option<u32>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]

@@ -803,6 +803,15 @@
             "null"
           ]
         },
+        "custom_shader_input_height": {
+          "description": "Lines to scale the picture to, keeping its shape, before `custom_shader` draws it at the\noutput size. For shaders that soften the picture to a lower resolution, e.g. `480`. Unset\ndraws from the source picture.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 2
+        },
         "deinterlace": {
           "description": "Deinterlace interlaced sources. Progressive sources are not changed.",
           "type": "boolean",

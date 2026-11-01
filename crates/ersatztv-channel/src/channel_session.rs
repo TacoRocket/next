@@ -2054,7 +2054,9 @@ fn stream_output_settings(
             scaling_mode: video_norm.scaling_mode.into(),
             deinterlace: video_norm.deinterlace,
             filter_options: VideoFilterOptions {
-                custom_shader: video_norm.custom_shader.as_deref().map(CustomShader::new),
+                custom_shader: video_norm.custom_shader.as_deref().map(|glsl| {
+                    CustomShader::new(glsl).with_input_height(video_norm.custom_shader_input_height)
+                }),
                 ..video_norm.filters.clone().into()
             },
         },

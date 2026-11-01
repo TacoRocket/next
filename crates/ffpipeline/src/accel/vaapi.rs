@@ -641,8 +641,9 @@ impl VideoFilterOp for LibplaceboVaapi {
 }
 
 /// Scales to the output picture while drawing a custom shader, in one libplacebo pass on the
-/// source frame, so the shader samples source pixels. Same route and options as the Tunarr fork's
-/// CRT filter: DRM_PRIME into Vulkan, libplacebo to nv12, `scale_vulkan` back into a VAAPI frame.
+/// source frame, so the shader samples source pixels. With an input height, `scale_vaapi` first
+/// scales the source to that many lines as nv12. Same route and options as the Tunarr fork's CRT
+/// filter: DRM_PRIME into Vulkan, libplacebo to nv12, `scale_vulkan` back into a VAAPI frame.
 #[derive(Debug, Clone)]
 pub struct LibplaceboShaderVaapi {
     pub(crate) size: FrameSize,
@@ -671,8 +672,17 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
     }
 
     fn as_arg(&self) -> Option<String> {
+        // same width as the Tunarr fork: even, at least 2, rounded like Math.round
+        let input_scale = self.shader.input_height().map_or(String::new(), |height| {
+            let width = (f64::from(height) * f64::from(self.size.width)
+                / f64::from(self.size.height)
+                / 2.0)
+                .round() as u32
+                * 2;
+            format!("scale_vaapi=w={}:h={height}:format=nv12,", width.max(2))
+        });
         Some(format!(
-            "hwmap=derive_device=drm,format=drm_prime,libplacebo=w={}:h={}:format=nv12:colorspace=bt709:range=tv:chroma_location=topleft:extra_opts='plane_downscaler=mitchell':custom_shader_bin={},format=vulkan,scale_vulkan=format=nv12,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1",
+            "{input_scale}hwmap=derive_device=drm,format=drm_prime,libplacebo=w={}:h={}:format=nv12:colorspace=bt709:range=tv:chroma_location=topleft:extra_opts='plane_downscaler=mitchell':custom_shader_bin={},format=vulkan,scale_vulkan=format=nv12,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1",
             self.size.width,
             self.size.height,
             self.shader.hex(),

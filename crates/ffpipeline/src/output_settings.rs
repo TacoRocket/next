@@ -85,6 +85,7 @@ pub struct VideoFilterOptions {
 #[derive(Clone, PartialEq)]
 pub struct CustomShader {
     hex: std::sync::Arc<str>,
+    input_height: Option<u32>,
 }
 
 impl CustomShader {
@@ -94,17 +95,37 @@ impl CustomShader {
         for byte in glsl.bytes() {
             let _ = write!(hex, "{byte:02x}");
         }
-        Self { hex: hex.into() }
+        Self {
+            hex: hex.into(),
+            input_height: None,
+        }
+    }
+
+    /// Scale the picture to this many lines, keeping its shape, before the shader draws it.
+    pub fn with_input_height(self, input_height: Option<u32>) -> Self {
+        Self {
+            input_height,
+            ..self
+        }
     }
 
     pub(crate) fn hex(&self) -> &str {
         &self.hex
     }
+
+    pub(crate) fn input_height(&self) -> Option<u32> {
+        self.input_height
+    }
 }
 
 impl std::fmt::Debug for CustomShader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CustomShader({} bytes)", self.hex.len() / 2)
+        write!(
+            f,
+            "CustomShader({} bytes, input height {:?})",
+            self.hex.len() / 2,
+            self.input_height
+        )
     }
 }
 
