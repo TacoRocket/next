@@ -129,3 +129,24 @@ Early feedback on the **playout schema** and architecture is especially valuable
 ## License
 
 ErsatzTV is licensed under the [MIT License](LICENSE).
+
+## Fork option: VAAPI HDR10 LUT tone mapping
+
+Set `ETV_VAAPI_HABLE_LUT=1` in the channel worker's environment to prefer
+`tonemap_vaapi_lut` for 8-bit output. This ports the Tunarr fork's optional
+fixed-Hable lookup-table conversion to the ordinary VAAPI pipeline; CRT is not
+required. The filter runs on VAAPI surfaces, avoiding the libplacebo path's
+Vulkan handoffs.
+
+Selection requires known 10-bit input, limited (`tv`) range, BT.2020 primaries,
+BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
+The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
+the filter is absent, or the input/output is outside that scope, the existing
+mapping path remains in use. This option converts HDR to SDR; it does not disable
+tone mapping or preserve HDR.
+
+The fixed 1000-nit Hable curve can render highlights and brightness differently
+from libplacebo. Compare the picture on your media before enabling it. The
+selection and surface handling live in `crates/ffpipeline/src/accel/vaapi.rs`;
+`pipeline.rs` checks the original probe metadata before HDR classification loses
+range and Dolby Vision detail. No channel or playout schema change is required.

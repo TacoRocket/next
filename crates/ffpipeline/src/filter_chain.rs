@@ -1816,6 +1816,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -1842,6 +1843,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::P010le,
         }
@@ -1887,6 +1889,7 @@ pub(crate) mod tests {
 
     fn libplacebo_tonemap(output_format: PixelFormat) -> VideoFilter {
         ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format,
         }
@@ -1906,6 +1909,40 @@ pub(crate) mod tests {
             "{:?}",
             result.as_arg()
         );
+    }
+
+    #[test]
+    fn hdr10_lut_opt_in_replaces_libplacebo_and_keeps_missing_filter_fallback() {
+        let vaapi = vaapi_accel_with_libplacebo(true);
+        for (requested, available) in [(true, true), (false, true), (true, false)] {
+            let mut info = ffmpeg_info_with_libplacebo();
+            if available {
+                info.video_filters
+                    .insert(KnownVideoFilter::TonemapVaapiLut.to_string());
+            }
+            let input = ToneMapFilter {
+                prefer_vaapi_lut: requested,
+                algorithm: None,
+                output_format: PixelFormat::Yuv420p,
+            }
+            .into();
+            let result = vaapi.best_filter(
+                &input,
+                &info,
+                &hdr_vaapi_state(),
+                &VideoFilterOptions::default(),
+            );
+            if requested && available {
+                assert_eq!(result.as_arg().as_deref(), Some("tonemap_vaapi_lut"));
+                let mut state = hdr_vaapi_state();
+                result.apply_to(&mut state);
+                assert_eq!(state.hdr_format, HdrFormat::None);
+                assert_eq!(state.pixel_format, PixelFormat::Nv12);
+                assert_eq!(state.surface, FrameSurface::Vaapi);
+            } else {
+                assert!(matches!(result, VideoFilter::LibplaceboVaapi(_)));
+            }
+        }
     }
 
     #[test]
@@ -2339,6 +2376,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2363,6 +2401,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2384,6 +2423,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2405,6 +2445,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2428,6 +2469,7 @@ pub(crate) mod tests {
         state.pixel_format = PixelFormat::Nv12;
 
         let input: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2450,6 +2492,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let tonemap: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }
@@ -2501,6 +2544,7 @@ pub(crate) mod tests {
         let filter_options = VideoFilterOptions::default();
 
         let tonemap: VideoFilter = ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format: PixelFormat::Nv12,
         }

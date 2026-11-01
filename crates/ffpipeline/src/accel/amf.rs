@@ -411,6 +411,7 @@ mod tests {
 
     fn tonemap_filter(output_format: PixelFormat) -> VideoFilter {
         ToneMapFilter {
+            prefer_vaapi_lut: false,
             algorithm: Some(String::from("hable")),
             output_format,
         }
