@@ -221,7 +221,7 @@
       "type": "object",
       "properties": {
         "direct_nv12_handoff": {
-          "description": "When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.\n4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.\nNeeds the same patched ffmpeg.",
+          "description": "When `native_nv12_output` is not requested or the active layout is ineligible,\nstill hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.\nNeeds the same patched ffmpeg.",
           "type": "boolean",
           "default": false
         },
@@ -240,7 +240,7 @@
           "pattern": "^[a-z0-9_]+$"
         },
         "native_nv12_output": {
-          "description": "Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead\nof converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and\napplies only when the picture fills the output frame.",
+          "description": "Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead\nof converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and\napplies to positive-even active picture dimensions before any padding.",
           "type": "boolean",
           "default": false
         },
@@ -467,6 +467,21 @@
       "properties": {
         "flags": {
           "description": "Flags for the software `scale` filter, e.g. `bicubic`, `lanczos`, `fast_bilinear`.\nDefault is `bicubic`. Also applies to graphics, image subtitles, and hardware accels that\nuse the software scaler.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[a-z0-9_.+-]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ScaleVaapiOptions": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "FFmpeg `scale_vaapi` mode, e.g. `default` for the driver's scaler or `hq`.\nOmitted leaves FFmpeg's existing choice unchanged.",
           "type": [
             "string",
             "null"
@@ -716,6 +731,18 @@
           ],
           "default": null
         },
+        "scale_vaapi": {
+          "description": "Options for VAAPI video and bitmap-subtitle resizing. Requires the fork worker.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScaleVaapiOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "tonemap": {
           "description": "Options for the [`tonemap`](https://ffmpeg.org/ffmpeg-filters.html#tonemap-1) filter, used\nfor software tonemapping.",
           "anyOf": [
@@ -901,6 +928,7 @@
             "deinterlace_vaapi": null,
             "libplacebo": null,
             "scale": null,
+            "scale_vaapi": null,
             "tonemap": null,
             "tonemap_opencl": null,
             "w3fdif": null,

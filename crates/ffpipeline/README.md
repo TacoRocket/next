@@ -110,3 +110,23 @@ upload because narrow BGRA surfaces were observed to corrupt rows during a
 VAAPI upload/download round trip. `accel/vaapi.rs` selects this path only when
 RGBA VPP support is reported; otherwise the existing software overlay remains
 in use. The conversion preserves alpha, requested dimensions and placement.
+
+## VAAPI scaling and CRT sampling
+
+`accel/vaapi.rs` resolves the optional fork channel field
+`normalization.video.filters.scale_vaapi.mode` into the video and bitmap-subtitle
+VAAPI scalers. For example, `{"scale_vaapi":{"mode":"default"}}` in
+`normalization.video.filters` asks the driver to choose its default scaler.
+Omitting the mode preserves the existing FFmpeg command. Software fallback,
+format-only conversions and other hardware backends are unchanged. Custom shader
+pre-scaling retains its separate `custom_shader_options.input_scale_mode` setting.
+This additive field keeps channel URI 0.1.3 and requires a fork worker containing
+this extension; integrators must pin a supporting release before emitting it.
+
+Native NV12 shader output is selected for positive-even active picture dimensions
+when requested and the runtime reports `libplacebo`'s `nv12_output` option.
+Padding follows the shader, so a picture does not have to fill the channel frame.
+`point_chroma` uses point sampling on this native route, including pictures with
+black bars; it can alias fine color detail compared with Mitchell filtering.
+Without the patched runtime, the existing filtered conversion remains. With
+native output disabled, the separate direct-handoff option retains filtered color.

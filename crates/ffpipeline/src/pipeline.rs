@@ -734,7 +734,6 @@ impl Pipeline {
 
         // the shader replaces the scale where libplacebo can draw it. HDR sources keep the plain
         // scale and tonemap, except HDR10 when the stage tone-maps it itself.
-        let frame = video_transcode.size;
         let shader_tonemaps = video_transcode
             .filter_options
             .custom_shader
@@ -762,7 +761,6 @@ impl Pipeline {
                         ShaderFilter {
                             scale,
                             shader: shader.clone(),
-                            frame,
                             hdr: shader_tonemaps,
                         }
                         .into(),

@@ -123,15 +123,20 @@ impl HwAccel for Vaapi {
                     size: Some(size), ..
                 },
                 shader,
-                frame,
                 hdr,
             }) => {
                 // libplacebo's nv12_output option ships with the patched runtime's writable
                 // nv12 import, which both direct routes need
                 let patched = ffmpeg_info
                     .has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output");
-                let native_nv12 =
-                    patched && shader.options().native_nv12_output && *frame == Some(*size);
+                // Padding follows this stage. Eligibility belongs to the active surface,
+                // not whether the picture fills the eventual channel frame.
+                let native_nv12 = patched
+                    && shader.options().native_nv12_output
+                    && size.width > 0
+                    && size.height > 0
+                    && size.width % 2 == 0
+                    && size.height % 2 == 0;
                 LibplaceboShaderVaapi {
                     size: *size,
                     shader: shader.clone(),
@@ -148,7 +153,11 @@ impl HwAccel for Vaapi {
                     && self.capabilities.vpp_supports_format(&PixelFormat::Bgra)
                     && flags.as_deref().is_none_or(|flags| flags == "bicubic") =>
             {
-                SubtitleImageScaleVaapi { size: *size }.into()
+                SubtitleImageScaleVaapi {
+                    size: *size,
+                    mode: filter_options.scale_vaapi.mode.clone(),
+                }
+                .into()
             }
 
             VideoFilter::Scale(ScaleFilter { size, .. })
@@ -158,7 +167,11 @@ impl HwAccel for Vaapi {
                         .capabilities
                         .vpp_supports_format(&current_state.pixel_format) =>
             {
-                ScaleVaapi { size: *size }.into()
+                ScaleVaapi {
+                    size: *size,
+                    mode: filter_options.scale_vaapi.mode.clone(),
+                }
+                .into()
             }
             VideoFilter::Pad(PadFilter { size, .. }) => {
                 let mut pad_options = vec![];
@@ -517,9 +530,14 @@ impl HwAccel for Vaapi {
     }
 }
 
+fn scale_mode_arg(mode: Option<&str>) -> String {
+    mode.map_or(String::new(), |mode| format!(":mode={mode}"))
+}
+
 #[derive(Debug, Clone)]
 pub struct SubtitleImageScaleVaapi {
     pub(crate) size: FrameSize,
+    pub(crate) mode: Option<String>,
 }
 
 impl VideoFilterOp for SubtitleImageScaleVaapi {
@@ -541,8 +559,10 @@ impl VideoFilterOp for SubtitleImageScaleVaapi {
         // The subtitle's centered overlay supplies the transparent margins. Fit the
         // decoded canvas at runtime, including when its size was unknown to the probe.
         Some(format!(
-            "scale_vaapi={}:{}:format=bgra:force_original_aspect_ratio=decrease,setsar=1",
-            self.size.width, self.size.height
+            "scale_vaapi={}:{}:format=bgra:force_original_aspect_ratio=decrease{},setsar=1",
+            self.size.width,
+            self.size.height,
+            scale_mode_arg(self.mode.as_deref())
         ))
     }
 }
@@ -550,6 +570,7 @@ impl VideoFilterOp for SubtitleImageScaleVaapi {
 #[derive(Debug, Clone)]
 pub struct ScaleVaapi {
     pub(crate) size: Option<FrameSize>,
+    pub(crate) mode: Option<String>,
 }
 
 impl VideoFilterOp for ScaleVaapi {
@@ -572,8 +593,10 @@ impl VideoFilterOp for ScaleVaapi {
     fn as_arg(&self) -> Option<String> {
         self.size.map(|size| {
             format!(
-                "scale_vaapi={}:{}:force_divisible_by=2,setsar=1",
-                size.width, size.height
+                "scale_vaapi={}:{}:force_divisible_by=2{},setsar=1",
+                size.width,
+                size.height,
+                scale_mode_arg(self.mode.as_deref())
             )
         })
     }
@@ -1052,6 +1075,50 @@ mod tests {
             let unsupported =
                 make_vaapi().best_filter(&filter, &info, &state, &VideoFilterOptions::default());
             assert_eq!(unsupported.as_arg(), filter.as_arg());
+        }
+    }
+
+    #[test]
+    fn scaling_mode_reaches_video_and_bitmap_subtitles() {
+        let mut vaapi = make_vaapi();
+        vaapi
+            .capabilities
+            .vpp_pixel_formats
+            .insert(libva_sys::VA_FOURCC_BGRA);
+        let info = make_ffmpeg_info(&[KnownVideoFilter::ScaleVaapi]);
+        for mode in [None, Some("default")] {
+            let options = VideoFilterOptions {
+                scale_vaapi: crate::output_settings::ScaleVaapiOptions {
+                    mode: mode.map(str::to_owned),
+                },
+                ..Default::default()
+            };
+            let size = FrameSize {
+                width: 1280,
+                height: 720,
+            };
+            let video = VideoFilter::Scale(ScaleFilter {
+                size: Some(size),
+                scaling_mode: crate::output_settings::ScalingMode::ScaleAndPad,
+                input_is_anamorphic: false,
+                flags: None,
+            });
+            let subtitle =
+                VideoFilter::SubtitleImageScale(SubtitleImageScaleFilter { size, flags: None });
+            for (filter, pixel_format) in
+                [(video, PixelFormat::Nv12), (subtitle, PixelFormat::Bgra)]
+            {
+                let state = FrameState {
+                    pixel_format,
+                    ..make_frame_state()
+                };
+                let best = vaapi.best_filter(&filter, &info, &state, &options);
+                let arg = best.as_arg().unwrap();
+                assert!(arg.starts_with("scale_vaapi=1280:720:"), "{arg}");
+                assert_eq!(arg.contains(":mode=default"), mode.is_some(), "{arg}");
+                let missing = vaapi.best_filter(&filter, &FfmpegInfo::default(), &state, &options);
+                assert_eq!(missing.as_arg(), filter.as_arg());
+            }
         }
     }
 

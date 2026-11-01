@@ -2393,17 +2393,13 @@ pub(crate) mod tests {
                 flags: None,
             },
             shader: crate::output_settings::CustomShader::new("//!HOOK MAIN"),
-            frame: Some(FrameSize {
-                width: 1920,
-                height: 1080,
-            }),
             hdr: false,
         }
         .into()
     }
 
     fn tier_shader(source: FrameSize, nv12_output: bool) -> Vec<String> {
-        tier_shader_with(source, nv12_output, false).0
+        tier_shader_with(source, nv12_output, false, true).0
     }
 
     /// The resolved args and the environment the filters ask for.
@@ -2411,6 +2407,7 @@ pub(crate) mod tests {
         source: FrameSize,
         nv12_output: bool,
         handoff: bool,
+        native: bool,
     ) -> (Vec<String>, Vec<String>) {
         let VideoFilter::Shader(mut shader) = shader_to_1080p() else {
             unreachable!()
@@ -2418,7 +2415,7 @@ pub(crate) mod tests {
         shader.shader = shader.shader.with_input_height(Some(480)).with_options(
             crate::output_settings::CustomShaderOptions {
                 input_scale_mode: Some("default".to_owned()),
-                native_nv12_output: true,
+                native_nv12_output: native,
                 point_chroma: true,
                 direct_nv12_handoff: handoff,
                 hdr_vaapi_lut: false,
@@ -2473,7 +2470,7 @@ pub(crate) mod tests {
             width: 1440,
             height: 1080,
         };
-        let (args, envs) = tier_shader_with(four_three, true, true);
+        let (args, envs) = tier_shader_with(four_three, true, true, false);
         assert!(
             !args[0].contains("scale_vulkan")
                 && !args[0].contains("nv12_output")
@@ -2484,7 +2481,7 @@ pub(crate) mod tests {
         assert_eq!(envs, vec!["ETV_VAAPI_DIRECT_NV12=1"]);
 
         // without the patched runtime's libplacebo option, the filtered route stays
-        let (args, envs) = tier_shader_with(four_three, false, true);
+        let (args, envs) = tier_shader_with(four_three, false, true, true);
         assert!(
             args[0].contains(",format=vulkan,scale_vulkan=format=nv12,"),
             "{args:?}"
@@ -2510,34 +2507,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shader_keeps_scale_vulkan_when_padded_or_without_nv12_output() {
-        for (source, nv12_output) in [
-            (
-                FrameSize {
-                    width: 1440,
-                    height: 1080,
-                },
-                true,
-            ),
-            (
-                FrameSize {
-                    width: 1920,
-                    height: 1080,
-                },
-                false,
-            ),
-        ] {
-            let args = tier_shader(source, nv12_output);
+    fn experimental_sampling_follows_the_active_picture_before_padding() {
+        for (width, height) in [(1440, 1080), (1920, 816), (960, 720), (2880, 2160)] {
+            let source = FrameSize { width, height };
+            let (args, envs) = tier_shader_with(source, true, true, true);
+            assert!(args[0].contains("nv12_output=native:"), "{args:?}");
+            assert!(args[0].contains("skip_aa=1:"), "{args:?}");
+            assert!(!args[0].contains("scale_vulkan"), "{args:?}");
+            assert_eq!(envs, vec!["ETV_VAAPI_DIRECT_NV12=1"]);
+
+            let (fallback, envs) = tier_shader_with(source, false, true, true);
+            assert!(!fallback[0].contains("nv12_output"), "{fallback:?}");
+            assert!(!fallback[0].contains("skip_aa"), "{fallback:?}");
             assert!(
-                args[0].starts_with("scale_vaapi=w=")
-                    && args[0].contains(":format=nv12:mode=default,")
-                    && !args[0].contains("nv12_output")
-                    && args[0].contains(
-                        ":chroma_location=topleft:extra_opts='plane_downscaler=mitchell':"
-                    )
-                    && args[0].contains(",format=vulkan,scale_vulkan=format=nv12,"),
-                "{args:?}"
+                fallback[0].contains("plane_downscaler=mitchell"),
+                "{fallback:?}"
             );
+            assert!(
+                fallback[0].contains("scale_vulkan=format=nv12"),
+                "{fallback:?}"
+            );
+            assert!(envs.is_empty());
         }
     }
 

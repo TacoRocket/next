@@ -361,13 +361,13 @@ pub struct CustomShaderOptionsConfig {
     pub input_scale_mode: Option<String>,
     /// Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead
     /// of converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and
-    /// applies only when the picture fills the output frame.
+    /// applies to positive-even active picture dimensions before any padding.
     pub native_nv12_output: bool,
     /// With `native_nv12_output`, point-sample the output chroma instead of filtering it with
     /// Mitchell. Faster; fine chroma detail can alias.
     pub point_chroma: bool,
-    /// When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.
-    /// 4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.
+    /// When `native_nv12_output` is not requested or the active layout is ineligible,
+    /// still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.
     /// Needs the same patched ffmpeg.
     pub direct_nv12_handoff: bool,
     /// Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with
@@ -397,6 +397,8 @@ pub struct VideoFilterOptionsConfig {
     /// Options for the [`scale`](https://ffmpeg.org/ffmpeg-filters.html#scale-1) filter, used for
     /// software scaling.
     pub scale: Option<ScaleOptions>,
+    /// Options for VAAPI video and bitmap-subtitle resizing. Requires the fork worker.
+    pub scale_vaapi: Option<ScaleVaapiOptions>,
     /// Options for the [`tonemap`](https://ffmpeg.org/ffmpeg-filters.html#tonemap-1) filter, used
     /// for software tonemapping.
     pub tonemap: Option<TonemapOptions>,
@@ -476,6 +478,16 @@ pub struct ScaleOptions {
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ScaleVaapiOptions {
+    /// FFmpeg `scale_vaapi` mode, e.g. `default` for the driver's scaler or `hq`.
+    /// Omitted leaves FFmpeg's existing choice unchanged.
+    #[serde(default, deserialize_with = "deserialize_filter_option")]
+    #[schemars(regex(pattern = r"^[a-z0-9_.+-]+$"))]
+    pub mode: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TonemapOptions {
     /// Value for the `tonemap` `tonemap` option. Allowed characters: a-z, 0-9, `_`, `.`, `+`, `-`.
     #[serde(default, deserialize_with = "deserialize_filter_option")]
@@ -540,6 +552,9 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
             },
             scale: ffpipeline::output_settings::ScaleOptions {
                 flags: value.scale.and_then(|o| o.flags),
+            },
+            scale_vaapi: ffpipeline::output_settings::ScaleVaapiOptions {
+                mode: value.scale_vaapi.and_then(|o| o.mode),
             },
             tonemap: ffpipeline::output_settings::TonemapOptions {
                 tonemap: value.tonemap.and_then(|o| o.tonemap),
