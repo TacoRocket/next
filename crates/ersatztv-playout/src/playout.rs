@@ -14,7 +14,7 @@ pub const DATE_FORMAT: Iso8601<DATE_CONFIG> = Iso8601::<DATE_CONFIG>;
 
 pub const SUPPORTED_SCHEMA: SchemaVersion = SchemaVersion {
     breaking: 0,
-    compatible: 7,
+    compatible: 8,
 };
 pub const SCHEMA: VersionedSchema =
     VersionedSchema::new("https://ersatztv.org/playout/version/", SUPPORTED_SCHEMA);
@@ -59,6 +59,17 @@ pub struct PlayoutItem {
     /// when present, is composited below every entry in this collection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphics: Vec<GraphicsLayer>,
+    /// Shrink the program over a local still at an item-relative marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_squeeze: Option<CreditSqueeze>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreditSqueeze {
+    /// Local PNG or JPEG path, readable by the worker.
+    pub background_image: String,
+    /// Milliseconds after this item's start; zero starts already squeezed.
+    pub start_ms: u64,
 }
 
 impl PlayoutItem {
@@ -83,6 +94,7 @@ impl PlayoutItem {
             tracks: None,
             watermark: None,
             graphics: Vec::new(),
+            credit_squeeze: None,
         })
     }
 
@@ -556,10 +568,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_003_to_007_files_load() {
+    async fn schema_003_to_008_files_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("playout.json");
-        for version in ["0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"] {
+        for version in ["0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7", "0.0.8"] {
             let mut item = item_json();
             let mut graphics = layer("canvas.nut");
             if version == "0.0.4" {
@@ -569,6 +581,10 @@ mod tests {
                 graphics["kind"] = serde_json::json!("canvas");
                 graphics["layout"] =
                     serde_json::json!({"mode": "region", "origin": {"x": 80, "y": 40}});
+            }
+            if version == "0.0.8" {
+                item["credit_squeeze"] =
+                    serde_json::json!({ "background_image": "background.png", "start_ms": 5000 });
             }
             item["graphics"] = serde_json::json!([graphics]);
             let value = serde_json::json!({
@@ -598,7 +614,7 @@ mod tests {
     async fn newer_schema_is_rejected_with_supported_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("playout.json");
-        let newer = "https://ersatztv.org/playout/version/0.0.8";
+        let newer = "https://ersatztv.org/playout/version/0.0.9";
         let value = serde_json::json!({ "version": newer, "items": [] });
         tokio::fs::write(&path, serde_json::to_vec(&value).unwrap())
             .await
@@ -610,7 +626,7 @@ mod tests {
                 supported,
             })) => {
                 assert_eq!(found, newer);
-                assert_eq!(supported, "https://ersatztv.org/playout/version/0.0.7");
+                assert_eq!(supported, "https://ersatztv.org/playout/version/0.0.8");
             }
             other => panic!("expected Unsupported, got {:?}", other.err()),
         }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ersatztv.org/playout/version/0.0.7",
+  "$id": "https://ersatztv.org/playout/version/0.0.8",
   "title": "Playout",
   "description": "A playout schedule for a single time window.\n\nFiles should be named `{start}_{finish}.json` using compact ISO 8601 (no separators), e.g. `20260413T000000.000000000-0500_20260414T002131.620000000-0500.json`, so that the channel can locate the correct file for the current time.",
   "type": "object",
@@ -85,6 +85,26 @@
             "$ref": "#/definitions/GraphicsLayer"
           },
           "default": []
+        },
+        "credit_squeeze": {
+          "type": "object",
+          "description": "Shrink the program over a local still after the marker; preserves audio and item end. Unsupported items stay full-screen.",
+          "properties": {
+            "background_image": {
+              "type": "string",
+              "description": "Local PNG or JPEG path readable by the worker."
+            },
+            "start_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Milliseconds after this item starts; zero starts already squeezed."
+            }
+          },
+          "required": [
+            "background_image",
+            "start_ms"
+          ],
+          "additionalProperties": false
         }
       }
     },

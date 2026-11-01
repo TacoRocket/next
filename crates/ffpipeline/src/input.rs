@@ -23,11 +23,19 @@ pub struct InputSettings {
     pub video_input: ProbedInput,
     pub subtitle_input: Option<ProbedInput>,
     pub graphics_inputs: Vec<GraphicsInput>,
+    pub credit_squeeze: Option<CreditSqueezeInput>,
     pub channel_number: Option<String>,
     /// Only for copied video. The audio must be in the same input, because the seek moves both.
     pub video_copy_seek: Option<CopySeek>,
     /// Blockers that need a dry run, so only the caller can find them
     pub video_copy_blockers: Vec<CopyBlocker>,
+}
+
+/// An item-relative marker; the worker subtracts `playout_offset` at render time.
+#[derive(Debug, Clone)]
+pub struct CreditSqueezeInput {
+    pub start: Duration,
+    pub background: Result<GraphicsInput, String>,
 }
 
 impl InputSettings {

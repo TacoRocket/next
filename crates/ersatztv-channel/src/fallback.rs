@@ -252,6 +252,7 @@ mod tests {
             tracks: None,
             watermark: None,
             graphics: Vec::new(),
+            credit_squeeze: None,
         };
         let reason = FallbackReason::from_transcode_error(
             &item,
@@ -294,6 +295,7 @@ mod tests {
             tracks: None,
             watermark: None,
             graphics: Vec::new(),
+            credit_squeeze: None,
         }
     }
 

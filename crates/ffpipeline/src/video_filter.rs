@@ -52,6 +52,7 @@ pub trait VideoFilterOp {
 #[enum_dispatch(VideoFilterOp)]
 pub enum VideoFilter {
     HwUpload(HwUploadFilter),
+    CreditSqueezeColor(crate::credit_squeeze::CreditSqueezeColor),
     HwDownload(HwDownloadFilter),
     Scale(ScaleFilter),
     Shader(ShaderFilter),
@@ -650,6 +651,7 @@ pub struct SubtitlesFilter {
     /// position among the file's subtitle streams; libass otherwise burns the first one
     pub subtitle_index: usize,
     pub seek: Duration,
+    pub preserve_timestamps: bool,
     pub fonts_folder: Option<String>,
     pub force_style: Option<String>,
 }
@@ -690,8 +692,13 @@ impl VideoFilterOp for SubtitlesFilter {
         }
 
         if self.seek > Duration::ZERO {
+            let restore = if self.preserve_timestamps {
+                format!("PTS-{}/TB", self.seek.as_secs_f64())
+            } else {
+                String::from("PTS-STARTPTS")
+            };
             Some(format!(
-                "setpts=PTS+{}/TB,subtitles={},setpts=PTS-STARTPTS",
+                "setpts=PTS+{}/TB,subtitles={},setpts={restore}",
                 self.seek.as_secs_f64(),
                 filter_args,
             ))
@@ -1114,6 +1121,7 @@ mod tests {
             path: String::from("/media/movie.mkv"),
             subtitle_index,
             seek: Duration::ZERO,
+            preserve_timestamps: false,
             fonts_folder: Some(String::from("/fonts")),
             force_style: None,
         };
@@ -1121,6 +1129,24 @@ mod tests {
         let second = filter(1).as_arg().unwrap();
         assert!(!first.contains(":si="), "{first}");
         assert!(second.contains(":si=1:fontsdir="), "{second}");
+    }
+
+    #[test]
+    fn sought_subtitles_keep_trimmed_credit_branch_timestamps() {
+        let mut filter = SubtitlesFilter {
+            path: String::from("/media/movie.srt"),
+            subtitle_index: 0,
+            seek: Duration::from_secs(6),
+            preserve_timestamps: true,
+            fonts_folder: None,
+            force_style: None,
+        };
+        assert_eq!(
+            filter.as_arg().unwrap(),
+            "setpts=PTS+6/TB,subtitles=/media/movie.srt,setpts=PTS-6/TB"
+        );
+        filter.preserve_timestamps = false;
+        assert!(filter.as_arg().unwrap().ends_with("setpts=PTS-STARTPTS"));
     }
 
     fn scale_filter(flags: Option<&str>) -> VideoFilter {

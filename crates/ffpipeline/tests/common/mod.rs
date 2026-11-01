@@ -1298,6 +1298,7 @@ pub fn build_input(
         video_input: local_input(path, probe, duration),
         subtitle_input: None,
         graphics_inputs: watermark.into_iter().collect(),
+        credit_squeeze: None,
         channel_number: None,
         video_copy_seek: None,
         video_copy_blockers: Vec::new(),

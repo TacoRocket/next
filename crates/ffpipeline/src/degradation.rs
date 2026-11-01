@@ -21,6 +21,8 @@ pub enum DegradationCode {
     CustomShaderHdrSkipped,
     /// The custom shader needs an accel that can draw it
     CustomShaderUnavailable,
+    /// Credit squeeze cannot run on this item; the picture stays full-screen.
+    CreditSqueezeUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
