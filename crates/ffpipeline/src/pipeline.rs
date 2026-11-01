@@ -2382,7 +2382,20 @@ mod tests {
                 filter.contains(&format!("[0:7]fps={rate},scale=")),
                 "{filter}"
             );
+            assert!(filter.contains(":shortest=1[v_o0]"), "{filter}");
         }
+    }
+
+    #[test]
+    fn only_a_rate_limited_subtitle_overlay_ends_with_the_video() {
+        let mut input = multichannel_ac3_input("main.mkv");
+        input.subtitle_input = Some(image_subtitle_input("main.mkv", "dvd_subtitle", None));
+        let mut pipeline = Pipeline::full(&FfmpegInfo::default(), input, stereo_output()).unwrap();
+        pipeline.optimize();
+        let filter = filter_complex(&pipeline.args());
+
+        assert!(!filter.contains("fps="), "{filter}");
+        assert!(!filter.contains("shortest"), "{filter}");
     }
 
     #[test]

@@ -854,7 +854,18 @@ impl FilterChain {
                         };
 
                         let out_label = format!("v_o{}", overlay_num);
-                        if let Some(arg) = overlay.kind.as_arg(overlay.location.clone()) {
+                        if let Some(mut arg) = overlay.kind.as_arg(overlay.location.clone()) {
+                            // at end of file sub2video flushes one frame stamped far in the
+                            // future, and fps fills every slot up to it, so the subtitle side
+                            // never ends. It outlasts the video, so end with the video instead.
+                            if matches!(overlay.secondary_source, OverlaySource::Subtitle)
+                                && overlay
+                                    .secondary
+                                    .iter()
+                                    .any(|f| matches!(f, VideoFilter::Fps(_)))
+                            {
+                                arg.push_str(":shortest=1");
+                            }
                             video_filter_chains.push(format!(
                                 "[{}][{}]{}[{}]",
                                 current_in, sec_ref, arg, out_label
