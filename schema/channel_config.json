@@ -902,6 +902,11 @@
           "default": null,
           "pattern": "^[1-9][0-9]*(/[1-9][0-9]*)?$"
         },
+        "hdr_vaapi_lut": {
+          "description": "Prefer the fixed-Hable VAAPI LUT for eligible HDR10 to 8-bit SDR conversions.\nRequires the patched FFmpeg filter; unsupported inputs retain the existing mapper.",
+          "type": "boolean",
+          "default": false
+        },
         "height": {
           "description": "Height in pixels. Applies only when `width` is also set; otherwise the source size is kept.\nThe fallback uses 1080 when unset.",
           "type": [

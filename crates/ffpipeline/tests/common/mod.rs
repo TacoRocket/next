@@ -1427,6 +1427,7 @@ pub fn build_output(dir: &Path, params: TestOutputParams) -> OutputSettings {
                 format: params.video_format,
                 bit_depth: params.bit_depth,
                 tone_mapping: true,
+                hdr_vaapi_lut: false,
                 bitrate: params.video_bitrate,
                 buffer: params.video_buffer,
                 size: params.video_size,

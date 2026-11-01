@@ -2082,6 +2082,7 @@ fn stream_output_settings(
             format: video_norm.format.into(),
             bit_depth: video_norm.bit_depth,
             tone_mapping: video_norm.tone_mapping,
+            hdr_vaapi_lut: video_norm.hdr_vaapi_lut,
             bitrate: video_norm.bitrate_kbps.map(Kbps),
             buffer: video_norm.buffer_kbps.map(Kbps),
             size: video_size,
@@ -2317,6 +2318,20 @@ mod tests {
     use time::macros::datetime;
 
     use super::*;
+
+    #[test]
+    fn channel_lut_preference_reaches_pipeline_settings() {
+        for (video, expected) in [
+            (json!({}), false),
+            (json!({"hdr_vaapi_lut": true}), true),
+            (json!({"hdr_vaapi_lut": false}), false),
+        ] {
+            let normalization: NormalizationConfig =
+                serde_json::from_value(json!({"audio": {}, "video": video})).unwrap();
+            let (_, output) = stream_output_settings(&normalization);
+            assert_eq!(output.transcode.hdr_vaapi_lut, expected);
+        }
+    }
 
     #[test]
     fn zero_state_seeks_into_an_item_that_started_earlier() {

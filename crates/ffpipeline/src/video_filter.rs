@@ -89,6 +89,7 @@ pub enum VideoFilter {
     PadVaapi(accel::vaapi::PadVaapi),
     FormatVaapi(accel::vaapi::FormatVaapi),
     TonemapVaapi(accel::vaapi::TonemapVaapi),
+    TonemapVaapiLut(accel::vaapi::TonemapVaapiLut),
     LibplaceboVaapi(accel::vaapi::LibplaceboVaapi),
     LibplaceboShaderVaapi(accel::vaapi::LibplaceboShaderVaapi),
     TransposeVaapi(accel::vaapi::TransposeVaapi),
@@ -456,6 +457,7 @@ impl VideoFilterOp for FormatFilter {
 
 #[derive(Debug, Clone)]
 pub struct ToneMapFilter {
+    pub prefer_vaapi_lut: bool,
     pub algorithm: Option<String>,
     pub output_format: PixelFormat,
 }

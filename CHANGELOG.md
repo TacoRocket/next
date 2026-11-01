@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Added
 - Channel config `0.1.4`: `normalization.video.tone_mapping` (default `true`). Set it to `false` to preserve HDR during 10-bit transcoding for compatible players and displays. Incompatible 8-bit HDR output and Dolby Vision profile 5 report an error and use the configured fallback; copied video is unchanged and SDR-only shaders are skipped for HDR.
+- Optional VAAPI HDR10 tone mapping with `normalization.video.hdr_vaapi_lut: true` (default false). Uses the fork's fixed-Hable LUT filter for known limited-range 10-bit BT.2020/PQ input without Dolby Vision, when producing 8-bit output. Missing filters and other inputs retain the existing mapping path.
 
 ### Fixed
 - Scale BGRA image subtitles on VAAPI with default scaling, avoiding software canvas enlargement before upload; retain software scaling for custom flags or unsupported hardware.
