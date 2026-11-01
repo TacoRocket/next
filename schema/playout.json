@@ -525,6 +525,14 @@
           "description": "Whether the content is live and therefore cannot seek or work ahead. Default: false.",
           "default": false
         },
+        "continuous": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "With `is_live`, play until the source ends or the channel stops, rather than stopping at the item's `finish`. Use it for a source that should stay connected across item boundaries, such as a whole-channel relay. When the source ends, the channel plays its fallback and then selects an item again. Default: false.",
+          "default": false
+        },
         "in_point_ms": {
           "type": [
             "integer",

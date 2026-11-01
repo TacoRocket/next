@@ -644,6 +644,9 @@ impl ChannelSession {
         // consider an item to be live if any of its sources are live;
         // live sources can never seek or work ahead
         let is_live = source_is_live(&video_source) || source_is_live(&audio_source);
+        // a continuous live source ignores the item's finish and plays until it ends
+        let is_continuous =
+            is_live && (source_is_continuous(&video_source) || source_is_continuous(&audio_source));
 
         let (audio, video) = stream_output_settings(&self.channel_config.normalization);
         let output_settings = OutputSettings {
@@ -688,6 +691,7 @@ impl ChannelSession {
             start_at_zero,
             realtime,
             is_live,
+            is_continuous,
         );
         let video_timing = self.input_timing(
             current_item,
@@ -695,10 +699,18 @@ impl ChannelSession {
             start_at_zero,
             realtime,
             is_live,
+            is_continuous,
         );
-        let subtitle_timing = subtitle_source
-            .as_ref()
-            .map(|s| self.input_timing(current_item, s, start_at_zero, realtime, is_live));
+        let subtitle_timing = subtitle_source.as_ref().map(|s| {
+            self.input_timing(
+                current_item,
+                s,
+                start_at_zero,
+                realtime,
+                is_live,
+                is_continuous,
+            )
+        });
 
         let video_index = current_item
             .tracks
@@ -977,7 +989,7 @@ impl ChannelSession {
 
         // ffmpeg exits 0 when a source ends early (short file, dropped live stream)
         let produced = self.playlist_manager.lock().await.pipeline_output().await?;
-        if let Some(reached) = shortfall_end(self.transcoded_until, finish, produced) {
+        if let Some(reached) = source_end(self.transcoded_until, finish, produced, is_continuous) {
             return Err(ChannelError::SourceEnded {
                 item_id: current_item.id.clone(),
                 reached,
@@ -1344,6 +1356,7 @@ impl ChannelSession {
         start_at_zero: bool,
         realtime: bool,
         is_live: bool,
+        is_continuous: bool,
     ) -> TimingResult {
         let mut is_complete = true;
 
@@ -1357,17 +1370,8 @@ impl ChannelSession {
             self.transcoded_until
         };
 
-        // live content never seeks. limit it to the remaining schedule interval
-        // so pipeline duration and graphics timing end at the same point.
         if is_live {
-            return TimingResult {
-                in_point: Duration::ZERO,
-                out_point: Duration::from_millis(
-                    (item_finish - effective_now).whole_milliseconds().max(0) as u64,
-                ),
-                finish: item_finish,
-                is_complete: true,
-            };
+            return live_timing(item_finish, effective_now, is_continuous);
         }
 
         let progress_ms = if start_at_zero {
@@ -2083,6 +2087,46 @@ async fn input_start_blocker(
     input_start.map_or(Some(CopyBlocker::NoKeyframes), |s| s.copy_blocker())
 }
 
+/// How long a continuous live pass may run. ffmpeg and the graphics need a duration; this one
+/// outlasts any session, so in practice the pass runs until its source ends or viewers leave.
+const CONTINUOUS_LIVE_PASS: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// Live content never seeks. Limit it to the remaining schedule interval, so pipeline duration
+/// and graphics timing end at the same point, unless it is continuous.
+fn live_timing(
+    item_finish: OffsetDateTime,
+    effective_now: OffsetDateTime,
+    is_continuous: bool,
+) -> TimingResult {
+    let out_point = if is_continuous {
+        CONTINUOUS_LIVE_PASS
+    } else {
+        Duration::from_millis((item_finish - effective_now).whole_milliseconds().max(0) as u64)
+    };
+
+    TimingResult {
+        in_point: Duration::ZERO,
+        out_point,
+        finish: item_finish,
+        is_complete: true,
+    }
+}
+
+/// Where a pass's source ended, if it ended before its item did. A continuous pass has no
+/// scheduled end, so whenever it stops, its source has ended, possibly past the item's finish.
+fn source_end(
+    start: OffsetDateTime,
+    finish: OffsetDateTime,
+    produced: time::Duration,
+    is_continuous: bool,
+) -> Option<OffsetDateTime> {
+    if is_continuous {
+        return Some(start + produced);
+    }
+
+    shortfall_end(start, finish, produced)
+}
+
 fn shortfall_end(
     start: OffsetDateTime,
     finish: OffsetDateTime,
@@ -2138,6 +2182,17 @@ fn source_is_live(source: &PlayoutItemSource) -> bool {
             is_live: Some(true),
             ..
         } | PlayoutItemSource::Rtsp { .. }
+    )
+}
+
+fn source_is_continuous(source: &PlayoutItemSource) -> bool {
+    matches!(
+        source,
+        PlayoutItemSource::Http {
+            is_live: Some(true),
+            continuous: Some(true),
+            ..
+        }
     )
 }
 
@@ -2408,6 +2463,62 @@ mod tests {
             args.iter().any(|a| a.contains("subtitles=")),
             "error card is not burned in: {args:?}"
         );
+    }
+
+    #[test]
+    fn live_timing_stops_at_the_finish_unless_continuous() {
+        let now = datetime!(2026-01-01 12:00 UTC);
+        let finish = now + time::Duration::hours(12);
+
+        let scheduled = live_timing(finish, now, false);
+        assert_eq!(scheduled.out_point, Duration::from_secs(12 * 60 * 60));
+        assert_eq!(scheduled.finish, finish);
+
+        let continuous = live_timing(finish, now, true);
+        assert_eq!(continuous.out_point, CONTINUOUS_LIVE_PASS);
+        assert!(continuous.out_point > Duration::from_secs(12 * 60 * 60));
+        assert_eq!(continuous.finish, finish);
+    }
+
+    #[test]
+    fn a_continuous_pass_ends_where_its_source_did() {
+        let start = datetime!(2026-01-01 12:00 UTC);
+        let finish = start + time::Duration::hours(12);
+        let past_finish = time::Duration::hours(13);
+
+        // a scheduled pass that reached its finish is complete
+        assert_eq!(source_end(start, finish, past_finish, false), None);
+        // a continuous one ran past it, and ended only because its source did
+        assert_eq!(
+            source_end(start, finish, past_finish, true),
+            Some(start + past_finish)
+        );
+        assert_eq!(
+            source_end(start, finish, time::Duration::minutes(5), true),
+            Some(start + time::Duration::minutes(5))
+        );
+    }
+
+    #[test]
+    fn only_a_live_http_source_can_be_continuous() {
+        let http = |is_live: Option<bool>, continuous: Option<bool>| PlayoutItemSource::Http {
+            uri: String::from("https://example.com/live.m3u8"),
+            is_live,
+            continuous,
+            in_point_ms: None,
+            out_point_ms: None,
+            headers: None,
+            user_agent: None,
+            timeout_us: None,
+            reconnect: None,
+            reconnect_delay_max: None,
+            keep_alive: None,
+            probe_hint: None,
+        };
+
+        assert!(source_is_continuous(&http(Some(true), Some(true))));
+        assert!(!source_is_continuous(&http(Some(true), None)));
+        assert!(!source_is_continuous(&http(None, Some(true))));
     }
 
     #[test]

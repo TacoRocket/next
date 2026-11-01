@@ -81,7 +81,8 @@ impl FallbackReason {
     ///
     /// A live source that drops or fails to open is retried after one fallback of `duration`,
     /// capped at its item's finish. Waiting out the finish would keep a live channel dark for
-    /// the rest of a long item even after its source came back.
+    /// the rest of a long item even after its source came back. A continuous source can end
+    /// past its item's finish, and then only the one fallback applies.
     pub fn fallback_finish(&self, from: OffsetDateTime, duration: Duration) -> OffsetDateTime {
         let after_one = from + duration;
         match self {
@@ -90,7 +91,9 @@ impl FallbackReason {
             }
             | FallbackReason::SourceEnded {
                 live: true, finish, ..
-            } => std::cmp::min(*finish, after_one),
+            } if *finish > from => std::cmp::min(*finish, after_one),
+            FallbackReason::TranscodeFailed { live: true, .. }
+            | FallbackReason::SourceEnded { live: true, .. } => after_one,
             _ => self.fallback_until().unwrap_or(after_one),
         }
     }
@@ -277,6 +280,7 @@ mod tests {
             source: Some(PlayoutItemSource::Http {
                 uri: String::from("https://example.com/live.m3u8"),
                 is_live: Some(true),
+                continuous: None,
                 in_point_ms: None,
                 out_point_ms: None,
                 headers: None,
@@ -312,6 +316,18 @@ mod tests {
         assert_eq!(
             reason.fallback_finish(reached, Duration::from_secs(60)),
             datetime!(2026-01-01 12:06 UTC)
+        );
+    }
+
+    #[test]
+    fn a_live_source_that_ended_past_its_item_gets_one_fallback() {
+        let item = live_item();
+        let reached = datetime!(2026-01-01 14:30 UTC);
+        let reason = FallbackReason::source_ended(&item, reached);
+
+        assert_eq!(
+            reason.fallback_finish(reached, Duration::from_secs(60)),
+            datetime!(2026-01-01 14:31 UTC)
         );
     }
 

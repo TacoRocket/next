@@ -240,6 +240,10 @@ pub enum PlayoutItemSource {
         /// ahead (default: false)
         #[serde(skip_serializing_if = "Option::is_none")]
         is_live: Option<bool>,
+        /// With `is_live`, play until the source ends or the channel stops, rather than
+        /// stopping at the item's `finish` (default: false)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        continuous: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         in_point_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
