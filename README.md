@@ -39,10 +39,8 @@ uses FFmpeg's `noise` bitstream filter with byte mutation disabled and a timesta
 drop expression. The remaining audio keeps its original timestamps; no codec-delay
 constant, audio re-encode for copied streams, or schedule adjustment is added.
 
-The worker checks FFmpeg's `noise` filter options once at startup. If a custom build
-lacks `amount` or `drop`, it logs a warning and continues without packet dropping.
-Playback and transport-reset signaling remain available, but audio overlap protection
-is disabled for that worker.
+The bundled FFmpeg supports the required `noise` bitstream filter and its `amount`
+and `drop` options. A custom FFmpeg override must provide those capabilities too.
 
 This drops whole packets at the incoming boundary. It can remove a small part of the next
 item's audio and leave a gap shorter than one incoming audio packet. It is not a crossfade

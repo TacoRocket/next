@@ -1430,7 +1430,7 @@ impl Pipeline {
                 // apad does not end; stop at the end of video
                 OutputOption::Shortest(None),
                 OutputOption::TsOffset(pts_offset),
-                OutputOption::AudioPacketFloor(ffmpeg_info.audio_packet_drop),
+                OutputOption::AudioPacketFloor,
                 OutputOption::VideoTrackTimeScale(90_000),
                 OutputOption::FrameRate(output_frame_rate),
                 OutputOption::Format(final_output_settings.format),
@@ -2179,42 +2179,32 @@ mod tests {
 
     #[test]
     fn continuing_hls_job_marks_counter_reset_and_bounds_audio_packets() {
-        for audio_packet_drop in [true, false] {
-            let mut output = stereo_output();
-            output.pts_offset = Some(PtsOffset {
-                duration: Duration::from_micros(8_041_367),
-                audio_end: Some(Duration::from_micros(8_066_733)),
-            });
-            let mut pipeline = generate_pipeline(
-                &FfmpegInfo {
-                    audio_packet_drop,
-                    ..FfmpegInfo::default()
-                },
-                multichannel_ac3_input("main.mkv"),
-                output,
-            )
-            .unwrap();
-            pipeline.optimize();
-            let args = pipeline.args();
-            assert!(
-                args.windows(2)
-                    .any(|pair| pair == ["-output_ts_offset", "8041ms"])
-            );
-            if audio_packet_drop {
-                assert!(
-                    args.windows(2)
-                        .any(|pair| pair
-                            == ["-bsf:a", "noise=amount=0:drop='lt(pts*tb,0.025733000)'"])
-                );
-            } else {
-                assert!(!args.iter().any(|arg| arg == "-bsf:a"));
-            }
-            assert!(args.windows(2).any(|pair| pair
-                == [
-                    "-hls_segment_options",
-                    "mpegts_flags=+initial_discontinuity"
-                ]));
-        }
+        let mut output = stereo_output();
+        output.pts_offset = Some(PtsOffset {
+            duration: Duration::from_micros(8_041_367),
+            audio_end: Some(Duration::from_micros(8_066_733)),
+        });
+        let mut pipeline = generate_pipeline(
+            &FfmpegInfo::default(),
+            multichannel_ac3_input("main.mkv"),
+            output,
+        )
+        .unwrap();
+        pipeline.optimize();
+        let args = pipeline.args();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-output_ts_offset", "8041ms"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-bsf:a", "noise=amount=0:drop='lt(pts*tb,0.025733000)'"])
+        );
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "-hls_segment_options",
+                "mpegts_flags=+initial_discontinuity"
+            ]));
     }
 
     fn hdr10_input() -> InputSettings {
