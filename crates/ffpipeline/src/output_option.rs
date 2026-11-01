@@ -26,6 +26,7 @@ pub enum OutputOption {
     Seek(Duration),
     H264CopyParameterSets,
     TsOffset(Option<PtsOffset>),
+    AudioPacketFloor,
     CudaNoAutoScale,
     NoDemuxDecodeDelay,
     MovFlagsFastStart,
@@ -101,6 +102,16 @@ impl OutputOption {
                 ]
             }
             OutputOption::TsOffset(_) => Vec::new(),
+            OutputOption::AudioPacketFloor => output_context
+                .pts_offset
+                .and_then(PtsOffset::audio_packet_floor)
+                .map(|floor| {
+                    args![
+                        "-bsf:a",
+                        format!("noise=amount=0:drop='lt(pts*tb,{floor:.9})'"),
+                    ]
+                })
+                .unwrap_or_default(),
             OutputOption::CudaNoAutoScale => args!["-noautoscale"],
             OutputOption::NoDemuxDecodeDelay => args!["-muxdelay", "0", "-muxpreload", "0"],
             OutputOption::MovFlagsFastStart => {
@@ -114,5 +125,24 @@ impl OutputOption {
             }
             OutputOption::FrameRate(_) => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_floor_uses_emitted_offset_without_shifting_video() {
+        let mut offset = PtsOffset {
+            duration: Duration::from_micros(8_041_367),
+            audio_end: Some(Duration::from_micros(8_066_733)),
+        };
+        assert!((offset.audio_packet_floor().unwrap() - 0.025733).abs() < 1e-9);
+        // Copied-video seeking corrects the mux offset before options are emitted.
+        offset.duration -= Duration::from_millis(400);
+        assert!((offset.audio_packet_floor().unwrap() - 0.425733).abs() < 1e-9);
+        offset.audio_end = None;
+        assert_eq!(offset.audio_packet_floor(), None);
     }
 }

@@ -92,6 +92,7 @@ pub async fn run_copy_seek_test(case: CopySeekCase) {
 
         pts_offset = Some(PtsOffset {
             duration: last_segment_end(&env.ffprobe, &chunk_dir).await,
+            ..Default::default()
         });
         target += plan.duration;
         remaining -= plan.duration;

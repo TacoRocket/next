@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use crate::ArgVec;
 use crate::pipeline::{KEYFRAME_INTERVAL_SECONDS, OutputContext, SEGMENT_SECONDS};
 use crate::video_codec::VideoEncoder;
@@ -69,13 +67,12 @@ impl OutputFormat {
                     ]);
                 }
 
-                match output_context.pts_offset {
-                    Some(pts_offset) if pts_offset.duration > Duration::ZERO => {}
-                    _ => args.extend(args![
-                        "-hls_segment_options",
-                        "mpegts_flags=+initial_discontinuity",
-                    ]),
-                }
+                // Each FFmpeg job restarts MPEG-TS continuity counters even when
+                // timestamps continue. Signal the reset to transport readers too.
+                args.extend(args![
+                    "-hls_segment_options",
+                    "mpegts_flags=+initial_discontinuity",
+                ]);
 
                 args.extend(args![playlist.to_owned()]);
             }
