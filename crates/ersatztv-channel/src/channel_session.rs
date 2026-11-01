@@ -16,7 +16,7 @@ use ersatztv_playout::playout::{
 use ersatztv_playout::template::expand_template;
 use ffpipeline::copy_decision::{CopyBlocker, CopyDecision};
 use ffpipeline::error::FFPipelineError;
-use ffpipeline::ffmpeg_info::FfmpegInfo;
+use ffpipeline::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use ffpipeline::frame_rate::FrameRate;
 use ffpipeline::frame_size::FrameSize;
 use ffpipeline::input::{
@@ -271,6 +271,16 @@ impl ChannelSession {
         .await?;
 
         log::debug!("ffmpeg info: {:?}", self.ffmpeg_info);
+
+        if self.channel_config.normalization.video.hdr_vaapi_lut
+            && !self
+                .ffmpeg_info
+                .has_video_filter(&KnownVideoFilter::TonemapVaapiLut)
+        {
+            log::warn!(
+                "VAAPI HDR10 LUT requested, but FFmpeg lacks tonemap_vaapi_lut; using the existing mapper when tone mapping is needed"
+            );
+        }
 
         self.hw_accel = self
             .channel_config

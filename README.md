@@ -67,14 +67,16 @@ BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
 Frames must already be on VAAPI in P010 format; other surface/format paths keep
 the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
 the filter is absent, or the input/output is outside that scope, the existing
-mapping path remains in use. This option converts HDR to SDR; it does not disable
+mapping path remains in use. A requested but unavailable filter logs one warning
+at worker startup. This option converts HDR to SDR; it does not disable
 tone mapping or preserve HDR.
 
 The fixed 1000-nit Hable curve can render highlights and brightness differently
 from libplacebo. Compare the picture on your media before enabling it. The
 selection and surface handling live in `crates/ffpipeline/src/accel/vaapi.rs`;
 `pipeline.rs` checks the original probe metadata before HDR classification loses
-range and Dolby Vision detail. This fork extension keeps the upstream channel
+range and Dolby Vision detail. The CRT shader keeps its existing, separate HDR
+eligibility check; this option does not change that path. This fork extension keeps the upstream channel
 schema URI; integrators must use a fork worker that supports the field.
 
 The default is `false`. The preference only chooses the mapper when HDR is being
