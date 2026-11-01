@@ -654,8 +654,7 @@ impl Pipeline {
 
         let tonemap = PipelineFilter::Video(
             ToneMapFilter {
-                prefer_vaapi_lut: std::env::var("ETV_VAAPI_HABLE_LUT")
-                    .is_ok_and(|value| value == "1")
+                prefer_vaapi_lut: video_transcode.hdr_vaapi_lut
                     && crate::accel::vaapi::hdr10_lut_eligible(video_stream),
                 algorithm: video_transcode.filter_options.tonemap.tonemap.clone(),
                 output_format: match video_transcode.bit_depth {
@@ -1946,6 +1945,7 @@ mod tests {
                 transcode: crate::output_settings::VideoTranscodeSettings {
                     format: EncodeFormat::H264,
                     bit_depth: 8,
+                    hdr_vaapi_lut: false,
                     bitrate: Some(Kbps(2000)),
                     buffer: Some(Kbps(4000)),
                     size: Some(FrameSize {

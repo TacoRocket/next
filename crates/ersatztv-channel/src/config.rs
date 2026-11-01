@@ -264,6 +264,10 @@ pub struct VideoNormalizationConfig {
         deserialize_with = "deserialize_bit_depth"
     )]
     pub bit_depth: u8,
+    /// Prefer the fixed-Hable VAAPI LUT for eligible HDR10 to 8-bit SDR conversions.
+    /// Requires the patched FFmpeg filter; unsupported inputs retain the existing mapper.
+    #[serde(default)]
+    pub hdr_vaapi_lut: bool,
     /// Width in pixels. Applies only when `height` is also set; otherwise the source size is kept.
     /// The fallback uses 1920 when unset.
     pub width: Option<u32>,
