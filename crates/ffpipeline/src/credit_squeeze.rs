@@ -93,7 +93,7 @@ impl CreditSqueeze {
             let canvas_aspect = f64::from(working.width) / f64::from(working.height);
             let initial_width = (aspect / canvas_aspect).min(1.0);
             let initial_height = (canvas_aspect / aspect).min(1.0);
-            let final_height = 0.20 * canvas_aspect / aspect;
+            let final_height = 0.25 * canvas_aspect / aspect;
             let progress = format!(
                 "(0.5-0.5*cos(PI*clip(t-{start}+{},0,1)))",
                 elapsed.as_secs_f64()
@@ -102,7 +102,7 @@ impl CreditSqueeze {
             (
                 interpolate((1.0 - initial_width) / 2.0, 0.03),
                 interpolate((1.0 - initial_height) / 2.0, 0.97 - final_height),
-                interpolate(initial_width, 0.20),
+                interpolate(initial_width, 0.25),
                 interpolate(initial_height, final_height),
             )
         } else if self.start.is_zero() {

@@ -50,7 +50,7 @@ or schedule shortening. Existing playout versions remain readable.
 
 The optional fork extension `advertisement` replaces the still with one moving ad.
 The program moves to the bottom-left over the same one-second cosine entrance,
-ending at 20% of canvas width with 3% left and bottom margins. The inset preserves
+ending at 25% of canvas width with 3% left and bottom margins. The inset preserves
 program aspect ratio; its credits branch uses fit scaling without canvas padding
 or cropping. The ad fills the canvas. Deinterlacing, frame-rate conversion,
 rotation, subtitles and the existing post-composition shader still apply.
