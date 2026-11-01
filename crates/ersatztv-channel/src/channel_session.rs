@@ -139,7 +139,7 @@ pub struct ChannelSession {
     // after one failure, fallbacks use black so the fallback itself can't keep failing
     background_image_failed: bool,
     // the error card shares the channel's output settings, so it fails exactly when they are
-    // the problem; each failed card moves fallbacks one step toward settings that can't fail
+    // the problem; each failed card moves fallbacks one step toward simpler settings
     fallback_escalation: FallbackEscalation,
     degradation_report: Option<DegradationReport>,
 }
@@ -541,8 +541,11 @@ impl ChannelSession {
                 let reason = FallbackReason::from_transcode_error(&current_item, e);
                 reason.log(&self.transcoded_until);
                 // a failed fallback would only fail the same way again
-                if is_fallback && !self.escalate_fallback() {
-                    return Err(reason.into_error());
+                if is_fallback {
+                    if !self.escalate_fallback() {
+                        return Err(reason.into_error());
+                    }
+                    self.skip_failed_fallback_output().await;
                 }
                 let mut result = self
                     .transcode_fallback(&reason, realtime, troubleshoot, pts_time)
@@ -558,6 +561,7 @@ impl ChannelSession {
                             if !self.escalate_fallback() {
                                 return Err(e);
                             }
+                            self.skip_failed_fallback_output().await;
                             result = self
                                 .transcode_fallback(&reason, realtime, troubleshoot, pts_time)
                                 .await;
@@ -1634,13 +1638,31 @@ impl ChannelSession {
         pts_time: Option<PtsTime>,
     ) -> Result<(OffsetDateTime, bool), ChannelError> {
         let fallback_item = self.fallback_playout_item(reason, Duration::ZERO).await;
+        // a failed card may already have covered its slot
+        if fallback_slot_covered(self.transcoded_until, fallback_item.finish) {
+            return Ok((fallback_item.finish, true));
+        }
         // the failed pass may have output segments
         let pts_time = self.last_pts_time(pts_time).await;
         self.transcode_item(&fallback_item, realtime, troubleshoot, pts_time, true)
             .await
     }
 
-    /// Moves fallbacks one step toward settings that can't fail; returns false when none is
+    /// Moves the schedule past what a failed fallback already wrote, so its retry covers only
+    /// the rest of the slot instead of replaying it.
+    async fn skip_failed_fallback_output(&mut self) {
+        match self.playlist_manager.lock().await.pipeline_output().await {
+            Ok(produced) if produced > time::Duration::ZERO => self.transcoded_until += produced,
+            Ok(_) => {}
+            Err(e) => {
+                log::warn!(
+                    "couldn't measure what the failed fallback wrote; replaying its slot: {e}"
+                )
+            }
+        }
+    }
+
+    /// Moves fallbacks one step toward simpler settings; returns false when none is
     /// left. See [`FallbackEscalation`].
     fn escalate_fallback(&mut self) -> bool {
         let image = self.background_image().map(str::to_owned);
@@ -2429,6 +2451,11 @@ fn source_end(
     shortfall_end(start, finish, produced)
 }
 
+/// A retried card has nothing left to cover when a failed attempt already wrote up to its finish.
+fn fallback_slot_covered(from: OffsetDateTime, finish: OffsetDateTime) -> bool {
+    finish - from <= SHORTFALL_TOLERANCE
+}
+
 fn shortfall_end(
     start: OffsetDateTime,
     finish: OffsetDateTime,
@@ -2895,6 +2922,27 @@ mod tests {
             video.transcode.format,
             ffpipeline::pipeline::EncodeFormat::Hevc
         );
+    }
+
+    /// A card scheduled 0-12 s that wrote 4 s before failing is retried for 4-12 s, not 0-12 s
+    /// again; one that wrote its whole slot isn't retried.
+    #[test]
+    fn failed_fallback_output_counts_toward_its_slot() {
+        let start = datetime!(2026-01-01 12:00 UTC);
+        let finish = start + time::Duration::seconds(12);
+        let after_partial = start + time::Duration::seconds(4);
+        assert!(!fallback_slot_covered(after_partial, finish));
+        assert_eq!(finish - after_partial, time::Duration::seconds(8));
+        assert!(fallback_slot_covered(finish, finish));
+        assert!(fallback_slot_covered(
+            finish + time::Duration::milliseconds(400),
+            finish
+        ));
+        assert!(fallback_slot_covered(finish - SHORTFALL_TOLERANCE, finish));
+        assert!(!fallback_slot_covered(
+            finish - SHORTFALL_TOLERANCE - time::Duration::milliseconds(1),
+            finish
+        ));
     }
 
     #[test]
