@@ -1105,6 +1105,7 @@ mod tests {
             opencl_capabilities: OpenCLCapabilities::default(),
             vulkan_capabilities: None,
             prefer_low_power: true,
+            always_low_power: false,
         })
     }
 
@@ -1346,6 +1347,7 @@ mod tests {
             },
             vulkan_capabilities: None,
             prefer_low_power: true,
+            always_low_power: false,
         }
     }
 
@@ -2307,6 +2309,7 @@ mod tests {
             },
             vulkan_capabilities: None,
             prefer_low_power: true,
+            always_low_power: false,
         }
     }
 

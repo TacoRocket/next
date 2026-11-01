@@ -288,8 +288,8 @@ pub struct VideoNormalizationConfig {
     pub vaapi_device: Option<PathBuf>,
     /// VAAPI driver. Unset lets libva select the driver for `vaapi_device`.
     pub vaapi_driver: Option<VaapiDriver>,
-    /// Whether VAAPI HEVC encoding may use the low-power entrypoint (Intel VDEnc) when the GPU also
-    /// has the default one. Default `auto`.
+    /// Whether VAAPI encoding may use the low-power entrypoint (Intel VDEnc) when the GPU also has
+    /// the default one: for HEVC with `auto`, for every format with `always`. Default `auto`.
     #[serde(default)]
     pub vaapi_low_power: VaapiLowPower,
     /// Deinterlace interlaced sources. Progressive sources are not changed.
@@ -533,6 +533,11 @@ pub enum VaapiLowPower {
     Auto,
     /// Use the default entrypoint when the GPU has it.
     Never,
+    /// Use low-power for every format, including H.264, when it supports bitrate rate control.
+    /// H.264 on VDEnc is not faster, but it moves encoding off the EUs and leaves them to other
+    /// GPU work (e.g. concurrent shader filters). Falls back to the default entrypoint when
+    /// low-power is unavailable.
+    Always,
 }
 
 impl From<VaapiDriver> for ffpipeline::accel::vaapi::VaapiDriver {
@@ -708,7 +713,9 @@ impl HardwareAccel {
                                     capabilities,
                                     opencl_capabilities,
                                     vulkan_capabilities,
-                                    prefer_low_power: video.vaapi_low_power == VaapiLowPower::Auto,
+                                    prefer_low_power: video.vaapi_low_power != VaapiLowPower::Never,
+                                    always_low_power: video.vaapi_low_power
+                                        == VaapiLowPower::Always,
                                 },
                             ))
                         }

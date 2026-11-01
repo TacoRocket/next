@@ -42,6 +42,8 @@ pub struct Vaapi {
     /// The Vulkan device ffmpeg derives from this VAAPI device
     pub vulkan_capabilities: Option<VulkanCapabilities>,
     pub prefer_low_power: bool,
+    /// With `prefer_low_power`, use the low-power entrypoint for every format, not only HEVC
+    pub always_low_power: bool,
 }
 
 impl Vaapi {
@@ -50,6 +52,7 @@ impl Vaapi {
             &VideoFormat::from(*format),
             bit_depth,
             self.prefer_low_power,
+            self.always_low_power,
         )
     }
 
@@ -748,6 +751,7 @@ mod tests {
             },
             vulkan_capabilities: None,
             prefer_low_power: true,
+            always_low_power: false,
         }
     }
 
@@ -1087,13 +1091,17 @@ mod tests {
                 .insert((profile, entrypoint), rc);
         }
 
-        for (prefer_low_power, format, expected) in [
-            (true, EncodeFormat::Hevc, "-low_power 1"),
-            (false, EncodeFormat::Hevc, ""),
-            (true, EncodeFormat::H264, ""),
-            (true, EncodeFormat::Mpeg2Video, "-rc_mode 1"),
+        for (prefer_low_power, always_low_power, format, expected) in [
+            (true, false, EncodeFormat::Hevc, "-low_power 1"),
+            (false, false, EncodeFormat::Hevc, ""),
+            (true, false, EncodeFormat::H264, ""),
+            (true, true, EncodeFormat::H264, "-low_power 1"),
+            (false, true, EncodeFormat::H264, ""),
+            (true, false, EncodeFormat::Mpeg2Video, "-rc_mode 1"),
+            (true, true, EncodeFormat::Mpeg2Video, "-rc_mode 1"),
         ] {
             vaapi.prefer_low_power = prefer_low_power;
+            vaapi.always_low_power = always_low_power;
             let options = vaapi
                 .codec_for_format(&format, 8, None)
                 .unwrap()
@@ -1101,7 +1109,7 @@ mod tests {
                 .join(" ");
             assert_eq!(
                 options, expected,
-                "{format} prefer_low_power={prefer_low_power}"
+                "{format} prefer_low_power={prefer_low_power} always_low_power={always_low_power}"
             );
         }
     }

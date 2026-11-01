@@ -570,6 +570,11 @@
           "description": "Use the default entrypoint when the GPU has it.",
           "type": "string",
           "const": "never"
+        },
+        {
+          "description": "Use low-power for every format, including H.264, when it supports bitrate rate control.\nH.264 on VDEnc is not faster, but it moves encoding off the EUs and leaves them to other\nGPU work (e.g. concurrent shader filters). Falls back to the default entrypoint when\nlow-power is unavailable.",
+          "type": "string",
+          "const": "always"
         }
       ]
     },
@@ -865,7 +870,7 @@
           ]
         },
         "vaapi_low_power": {
-          "description": "Whether VAAPI HEVC encoding may use the low-power entrypoint (Intel VDEnc) when the GPU also\nhas the default one. Default `auto`.",
+          "description": "Whether VAAPI encoding may use the low-power entrypoint (Intel VDEnc) when the GPU also has\nthe default one: for HEVC with `auto`, for every format with `always`. Default `auto`.",
           "$ref": "#/$defs/VaapiLowPower",
           "default": "auto"
         },

@@ -229,12 +229,16 @@ impl VaapiCapabilities {
     }
 
     /// `EncSlice` uses the EUs; `EncSliceLP` is fixed-function VDEnc. HEVC on VDEnc is 2-3x faster
-    /// (N100). H.264 on VDEnc is not faster, and on Gen9 is slower with no B-frames.
+    /// (N100). H.264 on VDEnc is not faster, and on Gen9 is slower with no B-frames, so
+    /// `prefer_low_power` alone applies to HEVC. `always_low_power` extends it to every format,
+    /// for setups that want encoding off the EUs regardless of speed (e.g. to leave them to
+    /// concurrent GPU filters).
     pub fn encode_entrypoint_for(
         &self,
         format: &VideoFormat,
         bit_depth: u8,
         prefer_low_power: bool,
+        always_low_power: bool,
     ) -> Option<EncodeEntrypoint> {
         let profile = Self::encode_profile_for(format, bit_depth)?;
         let has = |ep| self.supported.contains(&(profile, ep));
@@ -242,7 +246,7 @@ impl VaapiCapabilities {
         let has_bitrate_rc = |mask: u32| mask & (VA_RC_VBR | VA_RC_CBR) != 0;
 
         let low_power = if prefer_low_power
-            && *format == VideoFormat::Hevc
+            && (always_low_power || *format == VideoFormat::Hevc)
             && has(VA_ENTRYPOINT_ENC_SLICE_LP)
             && rc_mask(VA_ENTRYPOINT_ENC_SLICE_LP).is_some_and(has_bitrate_rc)
         {
@@ -404,19 +408,34 @@ mod tests {
     fn hybrid_prefers_low_power_for_hevc_only() {
         let caps = hybrid();
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true, false),
             entrypoint(true, false)
         );
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 10, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 10, true, false),
             entrypoint(true, false)
         );
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::H264, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::H264, 8, true, false),
             entrypoint(false, false)
         );
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Mpeg2Video, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Mpeg2Video, 8, true, false),
+            entrypoint(false, false)
+        );
+    }
+
+    #[test]
+    fn hybrid_always_uses_low_power_for_every_format() {
+        let caps = hybrid();
+        for format in [VideoFormat::H264, VideoFormat::Hevc] {
+            assert_eq!(
+                caps.encode_entrypoint_for(&format, 8, true, true),
+                entrypoint(true, false)
+            );
+        }
+        assert_eq!(
+            caps.encode_entrypoint_for(&VideoFormat::Mpeg2Video, 8, true, true),
             entrypoint(false, false)
         );
     }
@@ -425,7 +444,7 @@ mod tests {
     fn hybrid_never_keeps_default_entrypoint() {
         let caps = hybrid();
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, false),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, false, false),
             entrypoint(false, false)
         );
     }
@@ -438,7 +457,7 @@ mod tests {
             (VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE_LP, VA_RC_CQP),
         ]);
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true, false),
             entrypoint(false, false)
         );
     }
@@ -452,7 +471,7 @@ mod tests {
         caps.rate_control
             .remove(&(VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE_LP));
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true, false),
             entrypoint(false, false)
         );
     }
@@ -466,7 +485,7 @@ mod tests {
         for prefer in [true, false] {
             for format in [VideoFormat::H264, VideoFormat::Hevc] {
                 assert_eq!(
-                    caps.encode_entrypoint_for(&format, 8, prefer),
+                    caps.encode_entrypoint_for(&format, 8, prefer, false),
                     entrypoint(true, false)
                 );
             }
@@ -477,7 +496,7 @@ mod tests {
     fn cqp_only_low_power_forces_cqp() {
         let caps = caps(&[(VA_PROFILE_H264_MAIN, VA_ENTRYPOINT_ENC_SLICE_LP, VA_RC_CQP)]);
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::H264, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::H264, 8, true, false),
             entrypoint(true, true)
         );
     }
@@ -489,11 +508,11 @@ mod tests {
             (VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE_LP, BITRATE),
         ]);
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true, false),
             entrypoint(true, false)
         );
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, false),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, false, false),
             entrypoint(false, true)
         );
     }
@@ -505,11 +524,11 @@ mod tests {
             (VA_PROFILE_HEVC_MAIN, VA_ENTRYPOINT_ENC_SLICE, BITRATE),
         ]);
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 8, true, false),
             entrypoint(false, false)
         );
         assert_eq!(
-            caps.encode_entrypoint_for(&VideoFormat::Hevc, 10, true),
+            caps.encode_entrypoint_for(&VideoFormat::Hevc, 10, true, false),
             None
         );
     }

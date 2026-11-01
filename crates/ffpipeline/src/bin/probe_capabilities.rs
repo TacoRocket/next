@@ -457,7 +457,8 @@ fn print_vaapi(device: &str, driver: Option<&str>) -> Result<(), String> {
                     .map_or_else(|| String::from("-"), |modes| modes.join(","))
             };
             let selected =
-                |prefer_low_power| match caps.encode_entrypoint_for(f, bd, prefer_low_power) {
+                |prefer_low_power| match caps.encode_entrypoint_for(f, bd, prefer_low_power, false)
+                {
                     Some(e) => format!(
                         "{}{}",
                         if e.low_power {
