@@ -140,7 +140,8 @@ Vulkan handoffs.
 
 Selection requires known 10-bit input, limited (`tv`) range, BT.2020 primaries,
 BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
-The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
+Frames must already be on VAAPI in P010 format; other surface/format paths keep
+the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
 the filter is absent, or the input/output is outside that scope, the existing
 mapping path remains in use. This option converts HDR to SDR; it does not disable
 tone mapping or preserve HDR.

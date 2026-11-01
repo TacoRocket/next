@@ -209,7 +209,8 @@ impl HwAccel for Vaapi {
                 output_format: format,
                 ..
             }) if self.output_format(format) == HwPixelFormat::Nv12
-                && current_state.pixel_format.bit_depth() == 10
+                && current_state.surface == FrameSurface::Vaapi
+                && current_state.pixel_format == PixelFormat::P010le
                 && ffmpeg_info.has_video_filter(&KnownVideoFilter::TonemapVaapiLut) =>
             {
                 TonemapVaapiLut.into()
