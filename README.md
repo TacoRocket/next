@@ -227,7 +227,7 @@ Custom full-frame graphics should be authored for the program's display shape.
 Even-pixel canvas rounding can slightly approximate unusual aspect ratios.
 
 Requires a fork worker release containing this option (not present in
-`v0.2.4-trfork14`). The upstream channel schema URI remains `0.1.3`. Integrators
+`v0.2.4-trfork.14`). The upstream channel schema URI remains `0.1.3`. Integrators
 must pin a supporting release; an older worker can silently ignore this field.
 Players and output adapters must honor aspect changes at program boundaries.
 Fixed encoded dimensions alone do not guarantee compatibility with every TV
