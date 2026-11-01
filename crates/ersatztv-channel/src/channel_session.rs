@@ -20,8 +20,9 @@ use ffpipeline::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use ffpipeline::frame_rate::FrameRate;
 use ffpipeline::frame_size::FrameSize;
 use ffpipeline::input::{
-    FfmpegInputArgs, GraphicsInput, HttpInputOptions, HttpInputSource, InputSettings, InputSource,
-    LavfiInputSource, LocalInputSource, ProbedInput, RtspInputOptions, RtspInputSource,
+    CreditSqueezeInput, FfmpegInputArgs, GraphicsInput, GraphicsKind, GraphicsLocation,
+    HttpInputOptions, HttpInputSource, InputSettings, InputSource, LavfiInputSource,
+    LocalInputSource, MediaGraphicsOptions, ProbedInput, RtspInputOptions, RtspInputSource,
 };
 use ffpipeline::keyframe_seek::{
     CopySeekRequest, InputStart, Keyframe, KeyframeLocator, plan_copy_seek,
@@ -775,6 +776,48 @@ impl ChannelSession {
             _ => None,
         };
 
+        let credit_squeeze = if let Some(squeeze) = &current_item.credit_squeeze {
+            let source = PlayoutItemSource::Local {
+                path: squeeze.background_image.clone(),
+                in_point_ms: None,
+                out_point_ms: None,
+                probe_hint: None,
+            };
+            let input_source = InputSource::Local(LocalInputSource {
+                path: squeeze.background_image.clone(),
+            });
+            let background = match session.resolve_probe(&source, &input_source).await {
+                Ok(probe_result) if probe_result.is_still_image() => Ok(GraphicsInput {
+                    layer_index: graphics_inputs.len(),
+                    input_source,
+                    probe_result,
+                    stream_index: None,
+                    kind: GraphicsKind::Media(MediaGraphicsOptions {
+                        location: GraphicsLocation::Center,
+                        width_percent: None,
+                        within_source_content: None,
+                        horizontal_margin_percent: None,
+                        vertical_margin_percent: None,
+                        opacity_percent: None,
+                        timing: None,
+                    }),
+                    in_point: Duration::ZERO,
+                }),
+                Ok(_) => Err(String::from(
+                    "Credit squeeze background must be a still image.",
+                )),
+                Err(err) => Err(format!(
+                    "Credit squeeze background could not be read: {err}"
+                )),
+            };
+            Some(CreditSqueezeInput {
+                start: Duration::from_millis(squeeze.start_ms),
+                background,
+            })
+        } else {
+            None
+        };
+
         let mut input_settings = InputSettings {
             start: current_item.start,
             playout_offset: if start_at_zero {
@@ -806,6 +849,7 @@ impl ChannelSession {
             },
             subtitle_input,
             graphics_inputs,
+            credit_squeeze,
             channel_number: Some(self.channel_config.number().to_owned()),
             video_copy_seek: None,
             video_copy_blockers: Vec::new(),
@@ -2023,6 +2067,7 @@ fn fallback_item(
         }),
         watermark: None,
         graphics: Vec::new(),
+        credit_squeeze: None,
     }
 }
 
@@ -2504,6 +2549,7 @@ mod tests {
             video_input: hinted_input(tracks.video.as_ref(), duration),
             subtitle_input: Some(hinted_input(tracks.subtitle.as_ref(), duration)),
             graphics_inputs: Vec::new(),
+            credit_squeeze: None,
             channel_number: None,
             video_copy_seek: None,
             video_copy_blockers: Vec::new(),

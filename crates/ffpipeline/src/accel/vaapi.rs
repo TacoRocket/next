@@ -289,7 +289,7 @@ impl HwAccel for Vaapi {
             OverlayKind::Software(_)
                 if ffmpeg_info.has_video_filter(&KnownVideoFilter::OverlayVaapi)
                     && self.capabilities.can_overlay
-                    && self.capabilities.vpp_supports_format(&PixelFormat::Bgra) =>
+                    && self.capabilities.vpp_supports_format(&PixelFormat::Rgba) =>
             {
                 overlay_filter.with_kind(OverlayKind::Vaapi(VaapiOverlay))
             }
@@ -508,10 +508,12 @@ impl HwAccel for Vaapi {
     fn can_convert_pixel_format(
         &self,
         _ffmpeg_info: &FfmpegInfo,
-        _from: &PixelFormat,
+        from: &PixelFormat,
         to: &PixelFormat,
     ) -> bool {
-        self.capabilities.vpp_supports_format(to)
+        // Reorder before upload: narrow BGRA surfaces can corrupt rows on VAAPI.
+        !matches!((from, to), (PixelFormat::Bgra, PixelFormat::Rgba))
+            && self.capabilities.vpp_supports_format(to)
     }
 }
 
@@ -873,7 +875,7 @@ impl OverlayKindOp for VaapiOverlay {
 
     fn secondary_input_state(&self, current_state: &FrameState) -> FrameState {
         FrameState {
-            pixel_format: PixelFormat::Bgra,
+            pixel_format: PixelFormat::Rgba,
             surface: FrameSurface::Vaapi,
             ..current_state.clone()
         }

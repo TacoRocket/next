@@ -1,6 +1,7 @@
 use crate::ArgVec;
 use crate::accel::vaapi::LibplaceboPad;
 use crate::audio_filter::AudioFilter;
+use crate::credit_squeeze::{CreditSqueeze, CreditSqueezeBranches};
 use crate::ffmpeg_info::FfmpegInfo;
 use crate::hw_accel::{HardwareAccel, HwAccel};
 use crate::output_settings::VideoFilterOptions;
@@ -24,6 +25,8 @@ pub enum PipelineFilter {
     Audio(AudioFilter),
     Video(VideoFilter),
     Overlay(OverlayFilter),
+    CreditSqueeze(CreditSqueeze),
+    CreditSqueezeBranches(CreditSqueezeBranches),
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +94,14 @@ impl FilterChain {
                         new_filter.apply_to(&mut state);
                         active_filters.push(PipelineFilter::Video(new_filter));
                     }
+                }
+                PipelineFilter::CreditSqueezeBranches(branches) => {
+                    branches.apply_to(&mut state);
+                    active_filters.push(filter.clone());
+                }
+                PipelineFilter::CreditSqueeze(squeeze) => {
+                    squeeze.apply_to(&mut state);
+                    active_filters.push(filter.clone());
                 }
                 PipelineFilter::Overlay(of) => {
                     let new_filter = of.clone();
@@ -168,8 +179,84 @@ impl FilterChain {
             }
         }
 
-        for filter in &self.filters {
+        for (filter_index, filter) in self.filters.iter().enumerate() {
             match filter {
+                PipelineFilter::CreditSqueezeBranches(branches) => {
+                    let mut branches = branches.clone();
+                    let software = *encoder_surface == FrameSurface::System
+                        || self.filters[filter_index + 1..].iter().any(|next| {
+                            if let PipelineFilter::Overlay(overlay) = next {
+                                let mut output = current_state.clone();
+                                branches.apply_to(&mut output);
+                                let best = accel.as_ref().map_or_else(
+                                    || overlay.clone(),
+                                    |a| a.best_overlay(overlay, ffmpeg_info, &output),
+                                );
+                                best.kind.main_input_state(&output).surface == FrameSurface::System
+                            } else {
+                                false
+                            }
+                        });
+                    let target = EncoderTarget {
+                        surface: if software {
+                            FrameSurface::System
+                        } else {
+                            FrameSurface::Vaapi
+                        },
+                        pixel_format: Some(PixelFormat::Nv12),
+                        also_accepts: Vec::new(),
+                    };
+                    for branch in [&mut branches.normal, &mut branches.credits] {
+                        branch.evaluate(&current_state, ffmpeg_info);
+                        branch.resolve(ffmpeg_info, accel, filter_options, &current_state, &target);
+                        branch.optimize();
+                        surfaces.extend(branch.surfaces.iter().copied());
+                    }
+                    branches.apply_to(&mut current_state);
+                    current_state.surface = target.surface;
+                    resolved.push(PipelineFilter::CreditSqueezeBranches(branches));
+                }
+                PipelineFilter::CreditSqueeze(squeeze) => {
+                    if current_state.surface != FrameSurface::Vaapi {
+                        Self::transfer_surface(
+                            ffmpeg_info,
+                            accel,
+                            &mut resolved,
+                            &mut current_state,
+                            FrameSurface::Vaapi,
+                            &Some(PixelFormat::Nv12),
+                            &mut surfaces,
+                        );
+                    }
+                    if current_state.pixel_format != PixelFormat::Nv12 {
+                        Self::convert_pixel_format(
+                            ffmpeg_info,
+                            &mut resolved,
+                            &mut current_state,
+                            &PixelFormat::Nv12,
+                            accel,
+                            &mut surfaces,
+                        );
+                    }
+                    let mut stage = squeeze.clone();
+                    stage.software_output = *encoder_surface == FrameSurface::System
+                        || self.filters[filter_index + 1..].iter().any(|next| {
+                            if let PipelineFilter::Overlay(overlay) = next {
+                                let best = accel.as_ref().map_or_else(
+                                    || overlay.clone(),
+                                    |a| a.best_overlay(overlay, ffmpeg_info, &current_state),
+                                );
+                                best.kind.main_input_state(&current_state).surface
+                                    == FrameSurface::System
+                            } else {
+                                false
+                            }
+                        });
+                    stage.apply_to(&mut current_state);
+                    surfaces.insert(FrameSurface::Vulkan);
+                    surfaces.insert(FrameSurface::Vaapi);
+                    resolved.push(PipelineFilter::CreditSqueeze(stage));
+                }
                 PipelineFilter::Video(video_filter) => {
                     if let VideoFilter::Pad(pad) = video_filter
                         && Self::fold_pad_into_libplacebo(&mut resolved, pad, &mut current_state)
@@ -750,6 +837,23 @@ impl FilterChain {
         subtitle_label: Option<&String>,
         graphics_labels: &[Option<String>],
     ) {
+        self.build_prefixed(
+            audio_label,
+            video_label,
+            subtitle_label,
+            graphics_labels,
+            "",
+        );
+    }
+
+    fn build_prefixed(
+        &mut self,
+        audio_label: &str,
+        video_label: &str,
+        subtitle_label: Option<&String>,
+        graphics_labels: &[Option<String>],
+        prefix: &str,
+    ) {
         self.audio_label = audio_label.to_owned();
         self.video_label = video_label.to_owned();
 
@@ -791,7 +895,15 @@ impl FilterChain {
         let video_filter_count = self
             .filters
             .iter()
-            .filter(|f| matches!(f, PipelineFilter::Video(_) | PipelineFilter::Overlay(_)))
+            .filter(|f| {
+                matches!(
+                    f,
+                    PipelineFilter::Video(_)
+                        | PipelineFilter::Overlay(_)
+                        | PipelineFilter::CreditSqueeze(_)
+                        | PipelineFilter::CreditSqueezeBranches(_)
+                )
+            })
             .count();
 
         if video_filter_count > 0 {
@@ -812,6 +924,79 @@ impl FilterChain {
                             pending.push(arg);
                         }
                     }
+                    PipelineFilter::CreditSqueezeBranches(branches) => {
+                        if !pending.is_empty() {
+                            flush(
+                                &mut video_filter_chains,
+                                &mut pending,
+                                &current_in,
+                                "cs_branch_input",
+                            );
+                            current_in = String::from("cs_branch_input");
+                        }
+                        let start = branches.start.as_secs_f64();
+                        let mut credits = branches.credits.clone();
+                        if branches.start.is_zero() {
+                            credits.build_prefixed(
+                                "",
+                                &current_in,
+                                subtitle_label,
+                                graphics_labels,
+                                "csc_",
+                            );
+                            video_filter_chains.push(credits.video_complex_filter.clone());
+                            current_in = credits.video_label.trim_matches(['[', ']']).to_owned();
+                        } else {
+                            video_filter_chains.push(format!("[{current_in}]split=2[cs_before_raw][cs_after_raw];[cs_before_raw]trim=end={start}[cs_before_input];[cs_after_raw]trim=start={start}[cs_after_input]"));
+                            let mut normal = branches.normal.clone();
+                            normal.build_prefixed(
+                                "",
+                                "cs_before_input",
+                                subtitle_label,
+                                graphics_labels,
+                                "csn_",
+                            );
+                            credits.build_prefixed(
+                                "",
+                                "cs_after_input",
+                                subtitle_label,
+                                graphics_labels,
+                                "csc_",
+                            );
+                            video_filter_chains.push(normal.video_complex_filter.clone());
+                            video_filter_chains.push(credits.video_complex_filter.clone());
+                            video_filter_chains.push(format!(
+                                "{}{}concat=n=2:v=1:a=0:preserve_ts=1[cs_joined]",
+                                normal.video_label, credits.video_label
+                            ));
+                            current_in = String::from("cs_joined");
+                        }
+                        overlay_num += 1;
+                    }
+                    PipelineFilter::CreditSqueeze(squeeze) => {
+                        let Some(background) = graphics_labels
+                            .get(squeeze.background_index)
+                            .and_then(Option::as_ref)
+                        else {
+                            continue;
+                        };
+                        if !pending.is_empty() {
+                            flush(
+                                &mut video_filter_chains,
+                                &mut pending,
+                                &current_in,
+                                "cs_input",
+                            );
+                            current_in = String::from("cs_input");
+                        }
+                        video_filter_chains.push(squeeze.graph(
+                            &current_in,
+                            background,
+                            "cs_output",
+                        ));
+                        current_in = String::from("cs_output");
+                        overlay_num += 1;
+                    }
                     PipelineFilter::Overlay(overlay) => {
                         let sec_label = match overlay.secondary_source {
                             OverlaySource::Subtitle => subtitle_label,
@@ -824,7 +1009,7 @@ impl FilterChain {
                             continue;
                         };
 
-                        let main_label = format!("v_m{}", overlay_num);
+                        let main_label = format!("{prefix}v_m{}", overlay_num);
                         if !pending.is_empty() {
                             flush(
                                 &mut video_filter_chains,
@@ -843,7 +1028,7 @@ impl FilterChain {
                         let sec_ref = if sec_args.is_empty() {
                             sec_in.to_owned()
                         } else {
-                            let sec_label = format!("v_s{}", overlay_num);
+                            let sec_label = format!("{prefix}v_s{}", overlay_num);
                             video_filter_chains.push(format!(
                                 "[{}]{}[{}]",
                                 sec_in,
@@ -853,7 +1038,7 @@ impl FilterChain {
                             sec_label
                         };
 
-                        let out_label = format!("v_o{}", overlay_num);
+                        let out_label = format!("{prefix}v_o{}", overlay_num);
                         if let Some(mut arg) = overlay.kind.as_arg(overlay.location.clone()) {
                             // at end of file sub2video flushes one frame stamped far in the
                             // future, and fps fills every slot up to it, so the subtitle side
@@ -879,14 +1064,40 @@ impl FilterChain {
             }
 
             if !pending.is_empty() {
-                flush(&mut video_filter_chains, &mut pending, &current_in, "v");
-                self.video_label = String::from("[v]");
+                flush(
+                    &mut video_filter_chains,
+                    &mut pending,
+                    &current_in,
+                    &format!("{prefix}v"),
+                );
+                self.video_label = format!("[{prefix}v]");
             } else if overlay_num > 0 {
                 self.video_label = format!("[{}]", current_in);
             }
         }
 
         self.video_complex_filter = video_filter_chains.join(";");
+    }
+
+    pub(crate) fn envs(&self) -> Vec<crate::pipeline::EnvironmentVariable> {
+        let mut result = Vec::new();
+        for filter in &self.filters {
+            match filter {
+                PipelineFilter::Video(v) => result.extend(v.envs()),
+                PipelineFilter::CreditSqueeze(stage) if stage.native_nv12 => {
+                    result.push(crate::pipeline::EnvironmentVariable {
+                        key: String::from("ETV_VAAPI_DIRECT_NV12"),
+                        value: String::from("1"),
+                    })
+                }
+                PipelineFilter::CreditSqueezeBranches(branches) => {
+                    result.extend(branches.normal.envs());
+                    result.extend(branches.credits.envs());
+                }
+                _ => {}
+            }
+        }
+        result
     }
 
     pub(crate) fn audio_label(&self) -> &str {
@@ -1268,7 +1479,7 @@ pub(crate) mod tests {
             capabilities: VaapiCapabilities {
                 vpp_pixel_formats: HashSet::from([
                     libva_sys::VA_FOURCC_NV12,
-                    libva_sys::VA_FOURCC_BGRA,
+                    libva_sys::VA_FOURCC_RGBA,
                 ]),
                 can_overlay: true,
                 ..vaapi_accel_with_tonemap(VaapiDriver::Ihd, false, false, false).capabilities
@@ -1276,15 +1487,46 @@ pub(crate) mod tests {
             ..vaapi_accel_with_tonemap(VaapiDriver::Ihd, false, false, false)
         });
 
+        let mut watermark = periodic_watermark(Vec::new());
+        if let PipelineFilter::Overlay(overlay) = &mut watermark {
+            overlay.secondary_initial_state.pixel_format = PixelFormat::Bgra;
+            overlay.secondary_initial_state.size = FrameSize {
+                width: 460,
+                height: 256,
+            };
+            if let VideoFilter::Scale(scale) = &mut overlay.secondary[0] {
+                scale.size = Some(FrameSize {
+                    width: 230,
+                    height: 128,
+                });
+            }
+        }
+        let mut no_loop_watermark = watermark.clone();
+        if let PipelineFilter::Overlay(overlay) = &mut no_loop_watermark {
+            overlay.secondary.truncate(1);
+        }
+        let no_loop_sec = secondary_chain(
+            no_loop_watermark,
+            Some(accel.clone()),
+            &ffmpeg_info_with_filters(&[KnownVideoFilter::OverlayVaapi]),
+            sdr_state(FrameSurface::Vaapi, PixelFormat::Nv12),
+        );
+        assert!(
+            no_loop_sec.contains(
+                "scale=230:128:flags=bicubic,setsar=1,format=rgba,hwupload=derive_device=vaapi"
+            ),
+            "unexpected secondary: {no_loop_sec}"
+        );
+
         let sec = secondary_chain(
-            periodic_watermark(Vec::new()),
+            watermark,
             Some(accel),
             &ffmpeg_info_with_filters(&[KnownVideoFilter::OverlayVaapi]),
             sdr_state(FrameSurface::Vaapi, PixelFormat::Nv12),
         );
 
         assert!(
-            sec.contains("setsar=1,format=bgra,loop=-1:1,fade="),
+            sec.contains("scale=230:128:flags=bicubic,setsar=1,format=rgba,loop=-1:1,fade="),
             "unexpected secondary: {sec}"
         );
         assert!(

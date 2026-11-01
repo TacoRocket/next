@@ -59,6 +59,17 @@ pub struct PlayoutItem {
     /// when present, is composited below every entry in this collection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphics: Vec<GraphicsLayer>,
+    /// Shrink the program over a local still at an item-relative marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_squeeze: Option<CreditSqueeze>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreditSqueeze {
+    /// Local PNG or JPEG path, readable by the worker.
+    pub background_image: String,
+    /// Milliseconds after this item's start; zero starts already squeezed.
+    pub start_ms: u64,
 }
 
 impl PlayoutItem {
@@ -83,6 +94,7 @@ impl PlayoutItem {
             tracks: None,
             watermark: None,
             graphics: Vec::new(),
+            credit_squeeze: None,
         })
     }
 
@@ -569,6 +581,10 @@ mod tests {
                 graphics["kind"] = serde_json::json!("canvas");
                 graphics["layout"] =
                     serde_json::json!({"mode": "region", "origin": {"x": 80, "y": 40}});
+            }
+            if version == "0.0.7" {
+                item["credit_squeeze"] =
+                    serde_json::json!({ "background_image": "background.png", "start_ms": 5000 });
             }
             item["graphics"] = serde_json::json!([graphics]);
             let value = serde_json::json!({

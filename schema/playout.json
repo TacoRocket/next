@@ -85,6 +85,26 @@
             "$ref": "#/definitions/GraphicsLayer"
           },
           "default": []
+        },
+        "credit_squeeze": {
+          "type": "object",
+          "description": "Shrink the program over a local still after the marker; preserves audio and item end. Unsupported items stay full-screen.",
+          "properties": {
+            "background_image": {
+              "type": "string",
+              "description": "Local PNG or JPEG path readable by the worker."
+            },
+            "start_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Milliseconds after this item starts; zero starts already squeezed."
+            }
+          },
+          "required": [
+            "background_image",
+            "start_ms"
+          ],
+          "additionalProperties": false
         }
       }
     },

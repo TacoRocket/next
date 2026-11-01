@@ -158,6 +158,7 @@ impl VaapiCapabilities {
             PixelFormat::Nv12 | PixelFormat::Yuv420p => Some(VA_FOURCC_NV12),
             PixelFormat::P010le | PixelFormat::Yuv420p10le => Some(VA_FOURCC_P010),
             PixelFormat::Bgra => Some(VA_FOURCC_BGRA),
+            PixelFormat::Rgba => Some(VA_FOURCC_RGBA),
             _ => None,
         }
     }

@@ -28,8 +28,11 @@ static KNOWN_FILTERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 
 /// filter presence alone cannot tell a patched build from upstream, so these
 /// filters also get their options probed
-static OPTION_PROBED_FILTERS: &[KnownVideoFilter] =
-    &[KnownVideoFilter::VppQsv, KnownVideoFilter::LibPlacebo];
+static OPTION_PROBED_FILTERS: &[KnownVideoFilter] = &[
+    KnownVideoFilter::VppQsv,
+    KnownVideoFilter::LibPlacebo,
+    KnownVideoFilter::Concat,
+];
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownHardwareAccel {
@@ -60,6 +63,8 @@ impl From<KnownHardwareAccel> for Cow<'static, str> {
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownVideoFilter {
+    #[strum(serialize = "concat")]
+    Concat,
     #[strum(serialize = "bwdif")]
     Bwdif,
     #[strum(serialize = "bwdif_cuda")]

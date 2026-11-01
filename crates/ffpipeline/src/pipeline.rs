@@ -13,6 +13,7 @@ use crate::color::FrameColor;
 use crate::copy_decision::{
     CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision, video_copy_decision,
 };
+use crate::credit_squeeze::{CreditSqueeze, CreditSqueezeBranches, CreditSqueezeColor};
 use crate::degradation::{
     DegradationCode, Degradations, PipelineDegradation, accel_name, format_name,
 };
@@ -42,7 +43,7 @@ use crate::video_filter::{
     EnsureAlphaFilter, FadeFilter, FormatFilter, FpsFilter, LoopFilter, PadFilter, ScaleFilter,
     SetSarFilter, ShaderFilter, SoftwareDeinterlaceFilter, SoftwareDeinterlaceOptions,
     SubtitleImageScaleFilter, SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter,
-    VideoFilter, VideoFilterOp,
+    VideoFilter,
 };
 
 pub const KEYFRAME_INTERVAL_SECONDS: u32 = 2;
@@ -606,6 +607,27 @@ impl Pipeline {
             _ => false,
         };
 
+        let credit_squeeze = input_settings.credit_squeeze.as_ref().and_then(|request| {
+            let reason = if hdr != HdrFormat::None {
+                Some(String::from("Credit squeeze has not been validated for HDR; playing full-screen."))
+            } else if video_encoder.preferred_surface() != FrameSurface::Vaapi
+                || video_transcode.bit_depth != 8
+                || !matches!(&final_output_settings.accel, Some(HardwareAccel::Vaapi(vaapi)) if vaapi.can_libplacebo_shader(ffmpeg_info) && vaapi.capabilities.can_overlay)
+                || !ffmpeg_info.has_video_filter(&KnownVideoFilter::OverlayVaapi)
+                || !ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
+                || !ffmpeg_info.has_video_filter_option(&KnownVideoFilter::Concat, "preserve_ts")
+            {
+                Some(String::from("Credit squeeze requires 8-bit VAAPI, Vulkan sharing, and timestamp-preserving concat; playing full-screen."))
+            } else if let Ok(background) = &request.background {
+                input_settings.select_graphics_stream(background).is_none().then(|| String::from("Credit squeeze background has no video stream; playing full-screen."))
+            } else { request.background.as_ref().err().cloned() };
+            if let Some(reason) = reason {
+                degradations.add(DegradationCode::CreditSqueezeUnavailable, reason);
+                return None;
+            }
+            request.background.as_ref().ok().map(|background| (request.start.saturating_sub(input_settings.playout_offset), background))
+        });
+
         let initial_state = FrameState {
             size: FrameSize {
                 width: video_stream
@@ -752,6 +774,14 @@ impl Pipeline {
 
         let shader_tonemaps =
             shader_tonemaps && matches!(&scale, PipelineFilter::Video(VideoFilter::Shader(_)));
+        let squeeze_shader = if credit_squeeze.is_some() {
+            match &scale {
+                PipelineFilter::Video(VideoFilter::Shader(stage)) => Some(stage.shader.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
 
         let geometry_filters = [
             PipelineFilter::Video(
@@ -924,6 +954,7 @@ impl Pipeline {
                         path: subtitle_input.probe_result.path.to_owned(),
                         subtitle_index,
                         seek: subtitle_input.in_point,
+                        preserve_timestamps: false,
                         fonts_folder: final_output_settings.fonts_folder.to_owned(),
                         force_style: final_force_style,
                     }
@@ -931,6 +962,60 @@ impl Pipeline {
                 ))
             }
             None => {}
+        }
+
+        if let Some((start, background)) = credit_squeeze
+            && let Some(stream) = input_settings.select_graphics_stream(background)
+        {
+            inputs.push(PipelineInput::Graphics {
+                input: background.clone(),
+                layer_index: background.layer_index,
+                index: stream.stream_index,
+                path: background.probe_result.path.clone(),
+                extra_input_args: Vec::new(),
+            });
+            let mut normal: Vec<_> = filters
+                .iter()
+                .filter(|f| !matches!(f, PipelineFilter::Audio(_)))
+                .cloned()
+                .collect();
+            let mut credits = normal.clone();
+            normal.push(PipelineFilter::Video(CreditSqueezeColor.into()));
+            for filter in &mut credits {
+                match filter {
+                    PipelineFilter::Video(VideoFilter::Shader(shader)) => {
+                        *filter = PipelineFilter::Video(shader.scale.clone().into());
+                    }
+                    PipelineFilter::Video(VideoFilter::Subtitles(subtitles)) => {
+                        // The trimmed tail must retain the shared source clock at the join.
+                        subtitles.preserve_timestamps = true;
+                    }
+                    _ => {}
+                }
+            }
+            let native_nv12 = squeeze_shader
+                .as_ref()
+                .is_some_and(|shader| shader.options().native_nv12_output)
+                && ffmpeg_info
+                    .has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output");
+            let size = video_transcode.size.unwrap_or(initial_state.size);
+            credits.push(PipelineFilter::CreditSqueeze(CreditSqueeze {
+                background_index: background.layer_index,
+                start,
+                size,
+                shader: squeeze_shader,
+                native_nv12,
+                software_output: false,
+            }));
+            filters.retain(|f| matches!(f, PipelineFilter::Audio(_)));
+            filters.push(PipelineFilter::CreditSqueezeBranches(
+                CreditSqueezeBranches {
+                    start,
+                    size,
+                    normal: FilterChain::new(normal),
+                    credits: FilterChain::new(credits),
+                },
+            ));
         }
 
         for (graphics_input, graphics_stream) in
@@ -1720,11 +1805,7 @@ impl Pipeline {
             result.extend(a.envs())
         }
 
-        for filter in &self.filter_chain.filters {
-            if let PipelineFilter::Video(v) = filter {
-                result.extend(v.envs())
-            }
-        }
+        result.extend(self.filter_chain.envs());
 
         result
     }
@@ -1801,7 +1882,8 @@ fn copy_decisions(
                 &VideoCopyContext {
                     caller_blockers: &input_settings.video_copy_blockers,
                     is_still_image: input_settings.video_input.probe_result.is_still_image(),
-                    has_graphics: !input_settings.graphics_inputs.is_empty(),
+                    has_graphics: !input_settings.graphics_inputs.is_empty()
+                        || input_settings.credit_squeeze.is_some(),
                     image_subtitle: matches!(subtitle_burn, Some(SubtitleBurn::Image { .. })),
                     burned_subtitle: matches!(subtitle_burn, Some(SubtitleBurn::Text { .. })),
                     target_frame_rate: output_settings.frame_rate.as_ref(),
@@ -1947,6 +2029,7 @@ mod tests {
             video_input: probed_input(probe_result),
             subtitle_input: None,
             graphics_inputs: Vec::new(),
+            credit_squeeze: None,
             channel_number: None,
             video_copy_seek: None,
             video_copy_blockers: Vec::new(),
@@ -2113,6 +2196,143 @@ mod tests {
         let mut pipeline = Pipeline::full(&ffmpeg_info, input, output).unwrap();
         pipeline.optimize();
         pipeline
+    }
+
+    fn squeeze_pipeline(squeeze: bool, elapsed: u64, shader: bool) -> Pipeline {
+        use crate::filter_chain::tests::{
+            ffmpeg_info_with_libplacebo, vaapi_accel_with_libplacebo,
+        };
+        let mut info = ffmpeg_info_with_libplacebo();
+        info.hwaccels
+            .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
+        info.video_filters.extend(
+            [
+                KnownVideoFilter::ScaleVaapi,
+                KnownVideoFilter::OverlayVaapi,
+                KnownVideoFilter::Concat,
+            ]
+            .map(|f| f.to_string()),
+        );
+        info.video_filter_options
+            .insert("concat".to_owned(), ["preserve_ts".to_owned()].into());
+        let mut input = multichannel_ac3_input("main.mkv");
+        input.playout_offset = Duration::from_secs(elapsed);
+        if squeeze {
+            let mut background = canvas_input(InputSource::Local(crate::input::LocalInputSource {
+                path: "background.png".to_owned(),
+            }));
+            background.kind = GraphicsKind::Media(crate::input::MediaGraphicsOptions {
+                location: crate::input::GraphicsLocation::Center,
+                width_percent: None,
+                within_source_content: None,
+                horizontal_margin_percent: None,
+                vertical_margin_percent: None,
+                opacity_percent: None,
+                timing: None,
+            });
+            input.credit_squeeze = Some(crate::input::CreditSqueezeInput {
+                start: Duration::from_secs(5),
+                background: Ok(background),
+            });
+        }
+        let mut output = stereo_output();
+        let mut vaapi = vaapi_accel_with_libplacebo(true);
+        vaapi.capabilities.supported.insert((
+            libva_sys::VA_PROFILE_H264_MAIN,
+            libva_sys::VA_ENTRYPOINT_ENC_SLICE,
+        ));
+        vaapi
+            .capabilities
+            .vpp_pixel_formats
+            .extend([libva_sys::VA_FOURCC_NV12, libva_sys::VA_FOURCC_BGRA]);
+        vaapi.capabilities.can_overlay = true;
+        output.accel = Some(HardwareAccel::Vaapi(vaapi));
+        if shader {
+            output.video.transcode.filter_options.custom_shader = Some(
+                crate::output_settings::CustomShader::new("//!HOOK MAIN")
+                    .with_input_height(Some(480)),
+            );
+        }
+        let mut pipeline = Pipeline::full(&info, input, output).unwrap();
+        pipeline.optimize();
+        pipeline
+    }
+
+    #[test]
+    fn credit_squeeze_preserves_lead_geometry_audio_and_converts_join_colour() {
+        for shader in [false, true] {
+            let ordinary = squeeze_pipeline(false, 0, shader);
+            let squeezed = squeeze_pipeline(true, 0, shader);
+            let normal = squeezed
+                .filter_chain
+                .filters
+                .iter()
+                .find_map(|f| {
+                    if let PipelineFilter::CreditSqueezeBranches(branches) = f {
+                        Some(&branches.normal)
+                    } else {
+                        None
+                    }
+                })
+                .expect("squeeze branches");
+            let original_video: Vec<_> = ordinary
+                .filter_chain
+                .filters
+                .iter()
+                .filter(|f| !matches!(f, PipelineFilter::Audio(_)))
+                .collect();
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    normal
+                        .filters
+                        .iter()
+                        .filter(|f| !matches!(
+                            f,
+                            PipelineFilter::Video(VideoFilter::CreditSqueezeColor(_))
+                        ))
+                        .collect::<Vec<_>>()
+                ),
+                format!("{original_video:?}")
+            );
+            assert!(matches!(
+                normal.filters.last(),
+                Some(PipelineFilter::Video(VideoFilter::CreditSqueezeColor(_)))
+            ));
+            assert!(ordinary.output_context.audio_codec == squeezed.output_context.audio_codec);
+            assert_eq!(
+                ordinary.output_context.pts_offset.map(|o| o.duration),
+                squeezed.output_context.pts_offset.map(|o| o.duration)
+            );
+            assert!(
+                !degradation_codes(&squeezed).contains(&DegradationCode::CreditSqueezeUnavailable)
+            );
+            let args = squeezed.args();
+            assert_eq!(arg_value(&ordinary.args(), "-t"), arg_value(&args, "-t"));
+            assert!(args.iter().any(|arg| arg.contains("trim=end=5")));
+            let graph = arg_value(&args, "-filter_complex").expect("squeeze filter graph");
+            let join = graph
+                .split(';')
+                .find(|chain| chain.ends_with("[cs_joined]"))
+                .expect("normal-to-credits join");
+            assert_eq!(
+                join,
+                "[csn_v][cs_output]concat=n=2:v=1:a=0:preserve_ts=1[cs_joined]"
+            );
+            assert!(args.iter().any(|arg| arg.contains("out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:out_range=tv,setparams=")));
+        }
+    }
+
+    #[test]
+    fn credit_squeeze_join_after_marker_has_no_fullscreen_lead_in() {
+        let pipeline = squeeze_pipeline(true, 8, true);
+        let args = pipeline.args();
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("pos_w='if(eq(idx,1),ow*0.55,ow)'"))
+        );
+        assert!(!args.iter().any(|arg| arg.contains("concat=n=2")));
+        assert!(!args.iter().any(|arg| arg.contains("trim=end=")));
     }
 
     #[test]
