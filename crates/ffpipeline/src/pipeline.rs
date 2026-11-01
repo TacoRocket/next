@@ -2310,6 +2310,15 @@ mod tests {
             let args = squeezed.args();
             assert_eq!(arg_value(&ordinary.args(), "-t"), arg_value(&args, "-t"));
             assert!(args.iter().any(|arg| arg.contains("trim=end=5")));
+            let graph = arg_value(&args, "-filter_complex").expect("squeeze filter graph");
+            let join = graph
+                .split(';')
+                .find(|chain| chain.ends_with("[cs_joined]"))
+                .expect("normal-to-credits join");
+            assert_eq!(
+                join,
+                "[csn_v][cs_output]concat=n=2:v=1:a=0:preserve_ts=1[cs_joined]"
+            );
             assert!(args.iter().any(|arg| arg.contains("out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:out_range=tv,setparams=")));
         }
     }
