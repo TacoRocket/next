@@ -92,8 +92,8 @@ jobs:
           git fetch --no-tags --quiet https://github.com/ErsatzTV/next "refs/tags/${base}:refs/tags/${base}"
           changed=$(git diff --name-only "$base" HEAD)
 
-          # A change outside the crates, other than CI, the generated schemas and the
-          # version bump, could affect any of them.
+          # A change outside the crates, other than CI, the schemas and the version bump,
+          # could affect any of them.
           if grep -qvE '^(crates/|\.github/|schema/|Cargo\.(toml|lock)$)' <<< "$changed"; then
             echo "args=--workspace" >> "$GITHUB_OUTPUT"
             echo "Linting and testing the whole workspace: the fork changes files outside the crates." >> "$GITHUB_STEP_SUMMARY"
@@ -101,15 +101,22 @@ jobs:
           fi
 
           crates=$(grep '^crates/' <<< "$changed" | cut -d/ -f2 | sort -u || true)
-          if [[ -z "$crates" ]]; then
-            echo "Nothing to lint or test: the fork changes no crate." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
 
           # The changed crates and every workspace crate that depends on one.
           packages=$(for crate in $crates; do
             cargo tree --locked --workspace --all-features --target all -i "$crate" -e normal,build,dev --prefix none --format '{p}'
-          done | awk '{ print $1 }' | sort -u)
+          done | awk '{ print $1 }')
+
+          # The schemas are checked by ersatztv-core's tests.
+          if grep -q '^schema/' <<< "$changed"; then
+            packages+=$'\nersatztv-core'
+          fi
+
+          packages=$(sort -u <<< "$packages" | sed '/^$/d')
+          if [[ -z "$packages" ]]; then
+            echo "Nothing to lint or test: the fork changes no crate or schema." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           args=""
           for package in $packages; do
