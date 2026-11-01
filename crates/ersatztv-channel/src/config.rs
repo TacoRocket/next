@@ -14,7 +14,7 @@ use crate::error::{ChannelError, IoContext};
 
 pub const SUPPORTED_SCHEMA: SchemaVersion = SchemaVersion {
     breaking: 1,
-    compatible: 4,
+    compatible: 3,
 };
 pub const SCHEMA: VersionedSchema =
     VersionedSchema::new("https://ersatztv.org/channel/version/", SUPPORTED_SCHEMA);
@@ -245,6 +245,29 @@ impl From<&AudioLoudnessConfig> for ffpipeline::output_settings::AudioLoudnessSe
     }
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(title = "ToneMappingMode")]
+pub enum ToneMappingMode {
+    /// Convert HDR to SDR using the existing mapper.
+    #[default]
+    On,
+    /// Preserve compatible HDR; otherwise convert to SDR and report the reason.
+    SdrFallback,
+    /// Never tone-map. Unsupported HDR output reports an error and uses the configured fallback.
+    Off,
+}
+
+impl From<ToneMappingMode> for ffpipeline::output_settings::ToneMappingMode {
+    fn from(value: ToneMappingMode) -> Self {
+        match value {
+            ToneMappingMode::On => Self::On,
+            ToneMappingMode::SdrFallback => Self::SdrFallback,
+            ToneMappingMode::Off => Self::Off,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 pub struct VideoNormalizationConfig {
     /// Whether to transcode every item or copy items whose codec allows it. In `copy` mode, items
@@ -264,12 +287,10 @@ pub struct VideoNormalizationConfig {
         deserialize_with = "deserialize_bit_depth"
     )]
     pub bit_depth: u8,
-    /// Convert HDR to SDR when transcoding. Defaults to true. When false, HDR needs 10-bit
-    /// output and an HDR-capable player/display. Dolby Vision profile 5 cannot be preserved;
-    /// incompatible HDR items report an error and use the configured fallback. Copied video
-    /// is unchanged. SDR-only custom shaders are skipped for HDR when this is false.
-    #[serde(default = "default_tone_mapping")]
-    pub tone_mapping: bool,
+    /// HDR conversion policy for transcoded video. Defaults to on. Preserving HDR requires
+    /// compatible 10-bit output and an HDR-capable player/display; copied video is unchanged.
+    #[serde(default)]
+    pub tone_mapping: ToneMappingMode,
     /// Prefer the fixed-Hable VAAPI LUT for eligible HDR10 to 8-bit SDR conversions.
     /// Requires the patched FFmpeg filter; unsupported inputs retain the existing mapper.
     #[serde(default)]
@@ -997,10 +1018,6 @@ impl ChannelConfig {
 
 fn default_bit_depth() -> u8 {
     8
-}
-
-fn default_tone_mapping() -> bool {
-    true
 }
 
 fn deserialize_bit_depth<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {

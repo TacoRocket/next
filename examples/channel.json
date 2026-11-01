@@ -1,5 +1,5 @@
 {
-  "version": "https://ersatztv.org/channel/version/0.1.4",
+  "version": "https://ersatztv.org/channel/version/0.1.3",
   "playout": {
     "folder": "./playout"
   },
@@ -27,7 +27,7 @@
       "mode": "transcode",
       "format": "h264",
       "bit_depth": 8,
-      "tone_mapping": true,
+      "tone_mapping": "on",
       "width": 1920,
       "height": 1080,
       "bitrate_kbps": 2000,

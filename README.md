@@ -80,22 +80,35 @@ schema URI; integrators must use a fork worker that supports the field.
 The default is `false`. The preference only chooses the mapper when HDR is being
 converted to SDR; it has no effect when video is copied or HDR is preserved.
 
+## Fork option: HDR tone mapping policy
+
+Set `normalization.video.tone_mapping` in `channel.json`:
+
+- `"on"` (default): convert HDR to SDR, preserving existing behavior.
+- `"sdr_fallback"`: preserve compatible HDR. If the item cannot be preserved
+  (Dolby Vision profile 5 or HDR with effective 8-bit output), convert it to SDR
+  and report `hdr_tone_mapped` with the reason.
+- `"off"`: never tone-map. An incompatible HDR item reports
+  `hdr_preservation_unsupported` and uses the configured error/fallback picture.
+
+Preserving HDR requires 10-bit output and an HDR-capable player/display. SDR
+programs can still use 8-bit profiles in any mode. These decisions use the actual
+source and effective output, including MPEG-2's 8-bit limit. Copied video retains
+its existing behavior. Dolby Vision metadata preservation is not promised.
+SDR-only custom shaders are skipped while HDR is preserved.
+
+Reasons are written to `ffmpeg.degradation_report` for the scheduled item. Tunarr
+exposes them in its existing sessions status APIs; no new status UI is included.
+`hdr_vaapi_lut` only selects a conversion method when this policy actually maps
+HDR to SDR. Changing the configuration applies to a new worker session.
+
+This fork extension keeps upstream channel schema URI `0.1.3`; use a compatible
+fork worker. The bundled Tunarr worker is pinned, but an explicit worker-path
+override must also support these fields. HDR signaling, display switching and
+subtitle brightness on physical clients remain release checks; producing tagged
+10-bit segments alone does not establish client compatibility.
+
 ## Getting Started
-
-### Optional HDR tone mapping
-
-Channel config `0.1.4` adds `normalization.video.tone_mapping`. It defaults to
-`true`, preserving HDR-to-SDR conversion for existing configs. Set it to `false`
-to retain HDR when transcoding for an HDR-capable player and display; use 10-bit
-output, typically HEVC. Changing the channel config applies to a new worker session.
-
-With mapping disabled, an HDR item configured for 8-bit output reports an error
-and uses the configured fallback. Dolby Vision profile 5 also requires mapping;
-disabling it does not provide Dolby Vision passthrough. HDR10-compatible base layers
-can remain HDR, but Dolby Vision metadata preservation is not promised. SDR-only
-custom shaders are skipped for HDR when mapping is off. SDR content and copied
-video retain their existing behavior. Disabling mapping does not make an SDR
-display HDR-capable.
 
 ### Prerequisites
 

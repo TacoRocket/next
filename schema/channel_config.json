@@ -1,5 +1,5 @@
 {
-  "$id": "https://ersatztv.org/channel/version/0.1.4",
+  "$id": "https://ersatztv.org/channel/version/0.1.3",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ChannelConfig",
   "description": "Settings for one channel: where its playout is, which ffmpeg to use, and the output format.\nA relative path in any of these settings is relative to the file that sets it.",
@@ -552,6 +552,26 @@
         }
       }
     },
+    "ToneMappingMode": {
+      "title": "ToneMappingMode",
+      "oneOf": [
+        {
+          "description": "Convert HDR to SDR using the existing mapper.",
+          "type": "string",
+          "const": "on"
+        },
+        {
+          "description": "Preserve compatible HDR; otherwise convert to SDR and report the reason.",
+          "type": "string",
+          "const": "sdr_fallback"
+        },
+        {
+          "description": "Never tone-map. Unsupported HDR output reports an error and uses the configured fallback.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
     "TonemapOpenclOptions": {
       "type": "object",
       "properties": {
@@ -927,9 +947,9 @@
           "default": "scale_and_pad"
         },
         "tone_mapping": {
-          "description": "Convert HDR to SDR when transcoding. Defaults to true. When false, HDR needs 10-bit\noutput and an HDR-capable player/display. Dolby Vision profile 5 cannot be preserved;\nincompatible HDR items report an error and use the configured fallback. Copied video\nis unchanged. SDR-only custom shaders are skipped for HDR when this is false.",
-          "type": "boolean",
-          "default": true
+          "description": "HDR conversion policy for transcoded video. Defaults to on. Preserving HDR requires\ncompatible 10-bit output and an HDR-capable player/display; copied video is unchanged.",
+          "$ref": "#/$defs/ToneMappingMode",
+          "default": "on"
         },
         "vaapi_device": {
           "description": "VAAPI render node. Unset uses `/dev/dri/renderD128`.",

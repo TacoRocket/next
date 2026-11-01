@@ -853,8 +853,27 @@ impl ChannelSession {
         }
 
         let pts_offset = output_settings.pts_offset;
-        let mut pipeline_result =
-            pipeline::generate_pipeline(&self.ffmpeg_info, input_settings, output_settings)?;
+        let pipeline_result =
+            pipeline::generate_pipeline(&self.ffmpeg_info, input_settings, output_settings);
+        if let Err(ffpipeline::error::FFPipelineError::HdrPreservationUnsupported(reason)) =
+            &pipeline_result
+            && !is_fallback
+            && let Some(report) = self.degradation_report.as_mut()
+        {
+            let now = OffsetDateTime::now_utc();
+            report
+                .record(
+                    current_item,
+                    &[ffpipeline::degradation::PipelineDegradation {
+                        code: ffpipeline::degradation::DegradationCode::HdrPreservationUnsupported,
+                        message: reason.clone(),
+                    }],
+                    now,
+                    now + self.start_time_offset,
+                )
+                .await;
+        }
+        let mut pipeline_result = pipeline_result?;
         pipeline_result.optimize();
         let args = pipeline_result.args();
         let envs = pipeline_result.envs();
@@ -2081,7 +2100,7 @@ fn stream_output_settings(
         transcode: VideoTranscodeSettings {
             format: video_norm.format.into(),
             bit_depth: video_norm.bit_depth,
-            tone_mapping: video_norm.tone_mapping,
+            tone_mapping: video_norm.tone_mapping.into(),
             hdr_vaapi_lut: video_norm.hdr_vaapi_lut,
             bitrate: video_norm.bitrate_kbps.map(Kbps),
             buffer: video_norm.buffer_kbps.map(Kbps),

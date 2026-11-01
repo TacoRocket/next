@@ -54,11 +54,18 @@ pub struct VideoOutputSettings {
     pub transcode: VideoTranscodeSettings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneMappingMode {
+    On,
+    SdrFallback,
+    Off,
+}
+
 #[derive(Debug)]
 pub struct VideoTranscodeSettings {
     pub format: EncodeFormat,
     pub bit_depth: u8,
-    pub tone_mapping: bool,
+    pub tone_mapping: ToneMappingMode,
     pub hdr_vaapi_lut: bool,
     pub bitrate: Option<Kbps>,
     pub buffer: Option<Kbps>,
