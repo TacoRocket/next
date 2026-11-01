@@ -477,17 +477,44 @@
       },
       "additionalProperties": false
     },
+    "ScaleVaapiMode": {
+      "oneOf": [
+        {
+          "description": "Let the VAAPI driver choose its default scaling algorithm.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Prefer the driver's fast scaling algorithm.",
+          "type": "string",
+          "const": "fast"
+        },
+        {
+          "description": "Prefer the driver's high-quality scaling algorithm.",
+          "type": "string",
+          "const": "hq"
+        },
+        {
+          "description": "Use nonlinear anamorphic scaling where the driver supports it.",
+          "type": "string",
+          "const": "nl_anamorphic"
+        }
+      ]
+    },
     "ScaleVaapiOptions": {
       "type": "object",
       "properties": {
         "mode": {
-          "description": "FFmpeg `scale_vaapi` mode, e.g. `default` for the driver's scaler or `hq`.\nOmitted leaves FFmpeg's existing choice unchanged.",
-          "type": [
-            "string",
-            "null"
+          "description": "FFmpeg VAAPI scaling algorithm. Omitted leaves FFmpeg's existing choice unchanged.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScaleVaapiMode"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "default": null,
-          "pattern": "^[a-z0-9_.+-]+$"
+          "default": null
         }
       },
       "additionalProperties": false
