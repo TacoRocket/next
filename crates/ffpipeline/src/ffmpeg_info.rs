@@ -135,6 +135,7 @@ pub struct FfmpegInfo {
     pub(crate) hwaccels: HashSet<String>,
     pub(crate) decoders: HashSet<String>,
     pub(crate) video_filters: HashSet<String>,
+    pub(crate) audio_packet_drop: bool,
     pub(crate) preferred_filters: HashMap<String, usize>,
     pub(crate) video_filter_options: HashMap<String, HashSet<String>>,
 }
@@ -166,10 +167,18 @@ impl FfmpegInfo {
             }
         }
 
+        let audio_packet_drop = Self::load_audio_packet_drop(path).await?;
+        if !audio_packet_drop {
+            log::warn!(
+                "FFmpeg noise bitstream filter lacks amount/drop support; audio overlap protection is disabled, continuing without packet dropping"
+            );
+        }
+
         Ok(FfmpegInfo {
             hwaccels,
             decoders,
             video_filters,
+            audio_packet_drop,
             preferred_filters: preferred,
             video_filter_options,
         })
@@ -307,6 +316,20 @@ impl FfmpegInfo {
                 (flags.starts_with('V') && KNOWN_DECODERS.contains(&name)).then(|| name.to_owned())
             })
             .collect()
+    }
+
+    async fn load_audio_packet_drop(path: &Path) -> Result<bool, FFPipelineError> {
+        let output = process::command(path)
+            .args(["-hide_banner", "-h", "bsf=noise"])
+            .output()
+            .await
+            .map_err(|_| {
+                FFPipelineError::FfmpegCapabilitiesError(
+                    "noise bitstream filter options".to_owned(),
+                )
+            })?;
+        let options = Self::parse_filter_options(&String::from_utf8_lossy(&output.stdout));
+        Ok(output.status.success() && options.contains("-amount") && options.contains("-drop"))
     }
 
     async fn load_video_filter_options(

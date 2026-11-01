@@ -26,7 +26,7 @@ pub enum OutputOption {
     Seek(Duration),
     H264CopyParameterSets,
     TsOffset(Option<PtsOffset>),
-    AudioPacketFloor,
+    AudioPacketFloor(bool),
     CudaNoAutoScale,
     NoDemuxDecodeDelay,
     MovFlagsFastStart,
@@ -102,7 +102,7 @@ impl OutputOption {
                 ]
             }
             OutputOption::TsOffset(_) => Vec::new(),
-            OutputOption::AudioPacketFloor => output_context
+            OutputOption::AudioPacketFloor(true) => output_context
                 .pts_offset
                 .and_then(PtsOffset::audio_packet_floor)
                 .map(|floor| {
@@ -112,6 +112,7 @@ impl OutputOption {
                     ]
                 })
                 .unwrap_or_default(),
+            OutputOption::AudioPacketFloor(false) => Vec::new(),
             OutputOption::CudaNoAutoScale => args!["-noautoscale"],
             OutputOption::NoDemuxDecodeDelay => args!["-muxdelay", "0", "-muxpreload", "0"],
             OutputOption::MovFlagsFastStart => {
