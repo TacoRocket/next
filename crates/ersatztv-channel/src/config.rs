@@ -298,6 +298,11 @@ pub struct VideoNormalizationConfig {
     /// Options for individual ffmpeg filters. Unset options use the filter's default.
     #[serde(default)]
     pub filters: VideoFilterOptionsConfig,
+    /// A libplacebo user shader (mpv-style `//!HOOK` GLSL), drawn while scaling each frame to the
+    /// output picture, before padding, subtitles and graphics. Runs only with `vaapi`, when
+    /// ffmpeg has `libplacebo` and a Vulkan device on the same GPU can import its frames. Skipped
+    /// for HDR sources. Elsewhere the channel plays without it.
+    pub custom_shader: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
@@ -480,6 +485,8 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
             yadif_cuda: ffpipeline::output_settings::YadifCudaOptions {
                 mode: value.yadif_cuda.and_then(|o| o.mode),
             },
+            // set from the video config, not from these filter options
+            custom_shader: None,
         }
     }
 }

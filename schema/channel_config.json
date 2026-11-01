@@ -796,6 +796,13 @@
             "$ref": "#/$defs/VideoFormat"
           }
         },
+        "custom_shader": {
+          "description": "A libplacebo user shader (mpv-style `//!HOOK` GLSL), drawn while scaling each frame to the\noutput picture, before padding, subtitles and graphics. Runs only with `vaapi`, when\nffmpeg has `libplacebo` and a Vulkan device on the same GPU can import its frames. Skipped\nfor HDR sources. Elsewhere the channel plays without it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "deinterlace": {
           "description": "Deinterlace interlaced sources. Progressive sources are not changed.",
           "type": "boolean",

@@ -27,8 +27,8 @@ use ffpipeline::keyframe_seek::{
     CopySeekRequest, InputStart, Keyframe, KeyframeLocator, plan_copy_seek,
 };
 use ffpipeline::output_settings::{
-    AudioOutputSettings, AudioTranscodeSettings, CopyPolicy, OutputSettings, SubtitleMode,
-    VideoOutputSettings, VideoTranscodeSettings,
+    AudioOutputSettings, AudioTranscodeSettings, CopyPolicy, CustomShader, OutputSettings,
+    SubtitleMode, VideoFilterOptions, VideoOutputSettings, VideoTranscodeSettings,
 };
 use ffpipeline::pipeline::{Hz, Kbps, PtsOffset, SEGMENT_SECONDS};
 use ffpipeline::probe::{
@@ -2053,7 +2053,10 @@ fn stream_output_settings(
             size: video_size,
             scaling_mode: video_norm.scaling_mode.into(),
             deinterlace: video_norm.deinterlace,
-            filter_options: video_norm.filters.clone().into(),
+            filter_options: VideoFilterOptions {
+                custom_shader: video_norm.custom_shader.as_deref().map(CustomShader::new),
+                ..video_norm.filters.clone().into()
+            },
         },
     };
 

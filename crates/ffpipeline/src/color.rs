@@ -101,6 +101,14 @@ impl FrameColor {
         }
     }
 
+    /// The same primaries and transfer, with the bt709 matrix.
+    pub(crate) const fn with_bt709_matrix(self) -> Self {
+        Self {
+            matrix: ColorTag::Named("bt709"),
+            ..self
+        }
+    }
+
     pub(crate) const fn hdr10() -> Self {
         Self {
             primaries: ColorTag::Named("bt2020"),

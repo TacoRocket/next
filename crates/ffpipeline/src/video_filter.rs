@@ -9,7 +9,9 @@ use crate::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use crate::frame_rate::FrameRate;
 use crate::frame_size::FrameSize;
 use crate::input::{PeriodicClock, PeriodicTiming, WatermarkTiming};
-use crate::output_settings::{BwdifOptions, ScalingMode, W3fdifOptions, YadifOptions};
+use crate::output_settings::{
+    BwdifOptions, CustomShader, ScalingMode, W3fdifOptions, YadifOptions,
+};
 use crate::pipeline::{FrameState, FrameSurface, HdrFormat, PixelFormat};
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +50,7 @@ pub enum VideoFilter {
     HwUpload(HwUploadFilter),
     HwDownload(HwDownloadFilter),
     Scale(ScaleFilter),
+    Shader(ShaderFilter),
     Pad(PadFilter),
     Loop(LoopFilter),
     Fps(FpsFilter),
@@ -82,6 +85,7 @@ pub enum VideoFilter {
     FormatVaapi(accel::vaapi::FormatVaapi),
     TonemapVaapi(accel::vaapi::TonemapVaapi),
     LibplaceboVaapi(accel::vaapi::LibplaceboVaapi),
+    LibplaceboShaderVaapi(accel::vaapi::LibplaceboShaderVaapi),
     TransposeVaapi(accel::vaapi::TransposeVaapi),
     // OpenCL hardware filters
     PadOpencl(accel::opencl::PadOpencl),
@@ -101,6 +105,48 @@ pub enum VideoFilter {
 }
 
 // --- Software filter structs ---
+
+/// Scales like [`ScaleFilter`] while drawing a custom shader. The pipeline only adds it where an
+/// accel can draw the shader; elsewhere it falls back to the plain scale.
+#[derive(Debug, Clone)]
+pub struct ShaderFilter {
+    pub scale: ScaleFilter,
+    pub shader: CustomShader,
+}
+
+impl VideoFilterOp for ShaderFilter {
+    fn evaluate(&self, state: &FrameState, ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
+        // unlike scale, stays at the source size too, so the shader is always drawn
+        let size = match self.scale.evaluate(state, ffmpeg_info) {
+            Some(VideoFilter::Scale(scale)) => scale.size,
+            _ => None,
+        }
+        .unwrap_or(state.size);
+        Some(
+            ShaderFilter {
+                scale: ScaleFilter {
+                    size: Some(size),
+                    input_is_anamorphic: state.is_anamorphic,
+                    ..self.scale.clone()
+                },
+                shader: self.shader.clone(),
+            }
+            .into(),
+        )
+    }
+
+    fn apply_to(&self, state: &mut FrameState) {
+        self.scale.apply_to(state);
+    }
+
+    fn required_surface(&self) -> Option<FrameSurface> {
+        self.scale.required_surface()
+    }
+
+    fn as_arg(&self) -> Option<String> {
+        self.scale.as_arg()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HwUploadFilter {

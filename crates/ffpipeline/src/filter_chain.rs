@@ -934,7 +934,7 @@ mod tests {
     use crate::pipeline::{HdrFormat, HwPixelFormat, VideoFormat};
     use crate::video_filter::{
         FadeFilter, FormatFilter, HwMapFilter, HwUploadFilter, LoopFilter, PadFilter, ScaleFilter,
-        ToneMapFilter,
+        ShaderFilter, ToneMapFilter,
     };
 
     #[rstest::rstest]
@@ -2022,6 +2022,85 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn resolve_shader_vaapi(source: FrameSize, filters: Vec<VideoFilter>) -> Vec<String> {
+        let state = FrameState {
+            size: source,
+            ..sdr_vaapi_state()
+        };
+        let mut chain = FilterChain::new(filters.into_iter().map(PipelineFilter::Video).collect());
+        chain.evaluate(&state, &ffmpeg_info_with_libplacebo());
+        chain.resolve(
+            &ffmpeg_info_with_libplacebo(),
+            &Some(HardwareAccel::Vaapi(vaapi_accel_with_libplacebo(true))),
+            &VideoFilterOptions::default(),
+            &state,
+            &EncoderTarget {
+                surface: FrameSurface::Vaapi,
+                pixel_format: Some(PixelFormat::Nv12),
+                also_accepts: Vec::new(),
+            },
+        );
+        assert!(chain.surfaces().contains(&FrameSurface::Vulkan));
+        chain
+            .filters
+            .iter()
+            .filter_map(|f| match f {
+                PipelineFilter::Video(v) => v.as_arg(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn shader_to_1080p() -> VideoFilter {
+        ShaderFilter {
+            scale: ScaleFilter {
+                size: Some(FrameSize {
+                    width: 1920,
+                    height: 1080,
+                }),
+                scaling_mode: ScalingMode::ScaleAndPad,
+                input_is_anamorphic: false,
+                flags: None,
+            },
+            shader: crate::output_settings::CustomShader::new("//!HOOK MAIN"),
+        }
+        .into()
+    }
+
+    #[test]
+    fn shader_scales_in_one_libplacebo_pass_before_the_pad() {
+        let args = resolve_shader_vaapi(
+            FrameSize {
+                width: 640,
+                height: 480,
+            },
+            vec![shader_to_1080p(), pad_to_1080p()],
+        );
+        assert_eq!(
+            args[0],
+            "hwmap=derive_device=drm,format=drm_prime,libplacebo=w=1440:h=1080:format=nv12:colorspace=bt709:range=tv:chroma_location=topleft:extra_opts='plane_downscaler=mitchell':custom_shader_bin=2f2f21484f4f4b204d41494e,format=vulkan,scale_vulkan=format=nv12,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1"
+        );
+        // the pad stays outside the shader's picture
+        assert!(
+            args[1..].iter().all(|a| !a.contains("libplacebo"))
+                && args[1..].iter().any(|a| a.starts_with("pad")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn shader_draws_when_the_source_is_already_the_output_size() {
+        let args = resolve_shader_vaapi(
+            FrameSize {
+                width: 1920,
+                height: 1080,
+            },
+            vec![shader_to_1080p()],
+        );
+        assert_eq!(args.len(), 1, "{args:?}");
+        assert!(args[0].contains("libplacebo=w=1920:h=1080:"), "{args:?}");
     }
 
     fn pad_to_1080p() -> VideoFilter {

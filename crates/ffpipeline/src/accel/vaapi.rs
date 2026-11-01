@@ -9,6 +9,7 @@ use crate::color::FrameColor;
 use crate::ffmpeg_info::{FfmpegInfo, KnownHardwareAccel, KnownVideoFilter};
 use crate::frame_size::FrameSize;
 use crate::hw_accel::{HwAccel, HwDecoder};
+use crate::output_settings::CustomShader;
 use crate::output_settings::VideoFilterOptions;
 use crate::overlay_filter::{FramePoint, OverlayFilter, OverlayKind, OverlayKindOp};
 use crate::pipeline::{
@@ -18,8 +19,8 @@ use crate::pipeline::{
 use crate::probe::ProbeResultVideoStream;
 use crate::video_codec::VideoCodec;
 use crate::video_filter::{
-    DeinterlaceFilter, HwMapFilter, PadFilter, ScaleFilter, ToneMapFilter, TransposeDir,
-    TransposeFilter, VideoFilter, VideoFilterOp,
+    DeinterlaceFilter, HwMapFilter, PadFilter, ScaleFilter, ShaderFilter, ToneMapFilter,
+    TransposeDir, TransposeFilter, VideoFilter, VideoFilterOp,
 };
 
 #[derive(Debug, Clone, PartialEq, strum::Display, Serialize)]
@@ -71,6 +72,17 @@ impl Vaapi {
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::LibPlacebo)
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVulkan)
     }
+
+    /// Whether [`LibplaceboShaderVaapi`] can run: libplacebo on a Vulkan device that imports
+    /// VAAPI frames.
+    pub(crate) fn can_libplacebo_shader(&self, ffmpeg_info: &FfmpegInfo) -> bool {
+        self.vulkan_capabilities
+            .as_ref()
+            .is_some_and(|vk| vk.can_import_drm_prime())
+            && ffmpeg_info.has_hw_accel(&KnownHardwareAccel::Vulkan)
+            && ffmpeg_info.has_video_filter(&KnownVideoFilter::LibPlacebo)
+            && ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVulkan)
+    }
 }
 
 impl HwAccel for Vaapi {
@@ -82,6 +94,17 @@ impl HwAccel for Vaapi {
         filter_options: &VideoFilterOptions,
     ) -> VideoFilter {
         match video_filter {
+            VideoFilter::Shader(ShaderFilter {
+                scale: ScaleFilter {
+                    size: Some(size), ..
+                },
+                shader,
+            }) => LibplaceboShaderVaapi {
+                size: *size,
+                shader: shader.clone(),
+            }
+            .into(),
+
             VideoFilter::Scale(ScaleFilter { size, .. })
                 if ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
                     && !current_state.pixel_format.has_alpha()
@@ -613,6 +636,46 @@ impl VideoFilterOp for LibplaceboVaapi {
         Some(format!(
             "hwmap=derive_device=drm,format=drm_prime,libplacebo={pad}tonemapping={}:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=rgba,scale_vulkan=format=nv12:out_range=limited,hwmap=derive_device=vaapi:reverse=1,format=vaapi{setsar}",
             self.algorithm.as_deref().unwrap_or("linear"),
+        ))
+    }
+}
+
+/// Scales to the output picture while drawing a custom shader, in one libplacebo pass on the
+/// source frame, so the shader samples source pixels. Same route and options as the Tunarr fork's
+/// CRT filter: DRM_PRIME into Vulkan, libplacebo to nv12, `scale_vulkan` back into a VAAPI frame.
+#[derive(Debug, Clone)]
+pub struct LibplaceboShaderVaapi {
+    pub(crate) size: FrameSize,
+    pub(crate) shader: CustomShader,
+}
+
+impl VideoFilterOp for LibplaceboShaderVaapi {
+    fn evaluate(&self, _state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
+        None
+    }
+
+    fn apply_to(&self, state: &mut FrameState) {
+        state.size = self.size;
+        state.set_square_pixels();
+        state.pixel_format = PixelFormat::Nv12;
+        state.surface = FrameSurface::Vaapi;
+        state.color = state.color.with_bt709_matrix();
+    }
+
+    fn required_surface(&self) -> Option<FrameSurface> {
+        Some(FrameSurface::Vaapi)
+    }
+
+    fn internal_surface(&self) -> Option<FrameSurface> {
+        Some(FrameSurface::Vulkan)
+    }
+
+    fn as_arg(&self) -> Option<String> {
+        Some(format!(
+            "hwmap=derive_device=drm,format=drm_prime,libplacebo=w={}:h={}:format=nv12:colorspace=bt709:range=tv:chroma_location=topleft:extra_opts='plane_downscaler=mitchell':custom_shader_bin={},format=vulkan,scale_vulkan=format=nv12,hwmap=derive_device=vaapi:reverse=1,format=vaapi,setsar=1",
+            self.size.width,
+            self.size.height,
+            self.shader.hex(),
         ))
     }
 }

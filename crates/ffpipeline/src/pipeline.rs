@@ -37,8 +37,9 @@ use crate::video_decoder::VideoDecoder;
 use crate::video_filter::{
     ClipFilter, ColorChannelMixerFilter, CropFilter, DeinterlaceFilter, Dv5WorkaroundFilter,
     EnsureAlphaFilter, FadeFilter, FormatFilter, FpsFilter, LoopFilter, PadFilter, ScaleFilter,
-    SetSarFilter, SoftwareDeinterlaceFilter, SoftwareDeinterlaceOptions, SubtitleImageScaleFilter,
-    SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter, VideoFilter,
+    SetSarFilter, ShaderFilter, SoftwareDeinterlaceFilter, SoftwareDeinterlaceOptions,
+    SubtitleImageScaleFilter, SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter,
+    VideoFilter,
 };
 
 pub const KEYFRAME_INTERVAL_SECONDS: u32 = 2;
@@ -604,6 +605,40 @@ impl Pipeline {
             .into(),
         );
 
+        let scale = ScaleFilter {
+            size: video_transcode.size,
+            scaling_mode: video_transcode.scaling_mode,
+            input_is_anamorphic: initial_state.is_anamorphic,
+            flags: video_transcode.filter_options.scale.flags.clone(),
+        };
+
+        // the shader replaces the scale where libplacebo can draw it. HDR sources keep the plain
+        // scale and tonemap.
+        let scale = match &video_transcode.filter_options.custom_shader {
+            Some(_) if hdr != HdrFormat::None => {
+                log::debug!("{hdr:?} source; not drawing the custom shader");
+                PipelineFilter::Video(scale.into())
+            }
+            Some(shader) => match &final_output_settings.accel {
+                Some(HardwareAccel::Vaapi(vaapi)) if vaapi.can_libplacebo_shader(ffmpeg_info) => {
+                    PipelineFilter::Video(
+                        ShaderFilter {
+                            scale,
+                            shader: shader.clone(),
+                        }
+                        .into(),
+                    )
+                }
+                _ => {
+                    log::warn!(
+                        "the custom shader needs vaapi with libplacebo and a vulkan device that imports its frames; not drawing it"
+                    );
+                    PipelineFilter::Video(scale.into())
+                }
+            },
+            None => PipelineFilter::Video(scale.into()),
+        };
+
         let geometry_filters = [
             PipelineFilter::Video(
                 DeinterlaceFilter {
@@ -626,15 +661,7 @@ impl Pipeline {
                 .into(),
             ),
             PipelineFilter::Video(TransposeFilter::default().into()),
-            PipelineFilter::Video(
-                ScaleFilter {
-                    size: video_transcode.size,
-                    scaling_mode: video_transcode.scaling_mode,
-                    input_is_anamorphic: initial_state.is_anamorphic,
-                    flags: video_transcode.filter_options.scale.flags.clone(),
-                }
-                .into(),
-            ),
+            scale,
             PipelineFilter::Video(
                 CropFilter {
                     size: video_transcode.size,
@@ -1813,6 +1840,24 @@ mod tests {
             reports_folder: None,
             report_id: None,
         }
+    }
+
+    #[test]
+    fn custom_shader_without_vaapi_keeps_the_plain_scale() {
+        let mut output = stereo_output();
+        output.video.transcode.filter_options.custom_shader =
+            Some(crate::output_settings::CustomShader::new("//!HOOK MAIN"));
+        let mut pipeline = Pipeline::full(
+            &FfmpegInfo::default(),
+            multichannel_ac3_input("main.mkv"),
+            output,
+        )
+        .unwrap();
+        pipeline.optimize();
+        let args = pipeline.args().join(" ");
+
+        assert!(!args.contains("libplacebo"), "{args}");
+        assert!(args.contains("[0:0]scale=1080:720:"), "{args}");
     }
 
     #[test]

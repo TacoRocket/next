@@ -76,6 +76,36 @@ pub struct VideoFilterOptions {
     pub w3fdif: W3fdifOptions,
     pub yadif: YadifOptions,
     pub yadif_cuda: YadifCudaOptions,
+    /// Drawn while scaling to the output picture; see [`CustomShader`].
+    pub custom_shader: Option<CustomShader>,
+}
+
+/// A libplacebo user shader (mpv-style `//!HOOK` blocks). It is passed inline as
+/// `custom_shader_bin`, so no shader file is needed.
+#[derive(Clone, PartialEq)]
+pub struct CustomShader {
+    hex: std::sync::Arc<str>,
+}
+
+impl CustomShader {
+    pub fn new(glsl: &str) -> Self {
+        use std::fmt::Write;
+        let mut hex = String::with_capacity(glsl.len() * 2);
+        for byte in glsl.bytes() {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self { hex: hex.into() }
+    }
+
+    pub(crate) fn hex(&self) -> &str {
+        &self.hex
+    }
+}
+
+impl std::fmt::Debug for CustomShader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CustomShader({} bytes)", self.hex.len() / 2)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
