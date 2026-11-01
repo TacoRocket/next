@@ -86,6 +86,17 @@ impl CreditSqueeze {
                     height,
                 });
         let start = self.start.as_secs_f64();
+        // A zero start means the viewer joined during credits; do not replay the entrance.
+        let (x, y, size) = if self.start.is_zero() {
+            ("0.05".to_owned(), "0.225".to_owned(), "0.55".to_owned())
+        } else {
+            let progress = format!("(0.5-0.5*cos(PI*clip(t-{start},0,1)))");
+            (
+                format!("0.05*{progress}"),
+                format!("0.225*{progress}"),
+                format!("(1-0.45*{progress})"),
+            )
+        };
         let mode = self
             .shader
             .as_ref()
@@ -104,7 +115,7 @@ impl CreditSqueeze {
         graph.push(format!("[{after}]scale_vaapi=w={}:h={}:format=nv12{mode},hwmap=derive_device=drm,format=drm_prime,libplacebo=format=rgba,format=vulkan,split=2[cs_clock][cs_program]", working.width, working.height));
         graph.push(format!("[cs_clock]{to_vaapi}[cs_clock_va]"));
         graph.push(format!("[{background}]format=rgba,hwupload,loop=loop=-1:size=1:start=0,setpts=PTS+{start}/TB[cs_background]"));
-        graph.push(format!("[cs_background][cs_program]libplacebo=inputs=2:w={}:h={}:format=rgba:colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709:pos_x='if(eq(idx,1),ow*0.05,0)':pos_y='if(eq(idx,1),oh*0.225,0)':pos_w='if(eq(idx,1),ow*0.55,ow)':pos_h='if(eq(idx,1),oh*0.55,oh)',format=vulkan,{to_vaapi}[cs_composed]", working.width, working.height));
+        graph.push(format!("[cs_background][cs_program]libplacebo=inputs=2:w={}:h={}:format=rgba:colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709:pos_x='if(eq(idx,1),ow*{x},0)':pos_y='if(eq(idx,1),oh*{y},0)':pos_w='if(eq(idx,1),ow*{size},ow)':pos_h='if(eq(idx,1),oh*{size},oh)',format=vulkan,{to_vaapi}[cs_composed]", working.width, working.height));
         let credits_out = out;
         graph.push(format!("[cs_clock_va][cs_composed]overlay_vaapi=eof_action=pass:repeatlast=0,{effect},setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv{download}[{credits_out}]"));
         graph.join(";")

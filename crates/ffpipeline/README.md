@@ -24,8 +24,13 @@ retag of unknown or BT.601 pixels. Ordinary channels remain unchanged. Missing
 source colour tags still depend on FFmpeg/driver interpretation; command/pixel
 identity with an ordinary next transcode is not promised for that conversion.
 
+At the marker, the program moves and shrinks over one second with cosine easing,
+revealing the background. The final position is 5% from the left and 22.5% from
+the top, at 55% of the output width and height. Graphics stay outside this move.
+The compositor evaluates the move against video timestamps, not wall-clock time.
 The item-relative marker has the worker's elapsed playout time subtracted once;
-joining after the marker starts squeezed. Missing settings leave ordinary items
+joining at or after the marker starts squeezed without replaying the entrance.
+Missing settings leave ordinary items
 unchanged. The scheduler owns marker selection and the original item end.
 
 Credit squeeze is an optional fork field on playout `0.0.7`. The scheduler must use a
