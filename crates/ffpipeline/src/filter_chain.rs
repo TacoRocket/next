@@ -1479,7 +1479,7 @@ pub(crate) mod tests {
             capabilities: VaapiCapabilities {
                 vpp_pixel_formats: HashSet::from([
                     libva_sys::VA_FOURCC_NV12,
-                    libva_sys::VA_FOURCC_BGRA,
+                    libva_sys::VA_FOURCC_RGBA,
                 ]),
                 can_overlay: true,
                 ..vaapi_accel_with_tonemap(VaapiDriver::Ihd, false, false, false).capabilities
@@ -1487,15 +1487,46 @@ pub(crate) mod tests {
             ..vaapi_accel_with_tonemap(VaapiDriver::Ihd, false, false, false)
         });
 
+        let mut watermark = periodic_watermark(Vec::new());
+        if let PipelineFilter::Overlay(overlay) = &mut watermark {
+            overlay.secondary_initial_state.pixel_format = PixelFormat::Bgra;
+            overlay.secondary_initial_state.size = FrameSize {
+                width: 460,
+                height: 256,
+            };
+            if let VideoFilter::Scale(scale) = &mut overlay.secondary[0] {
+                scale.size = Some(FrameSize {
+                    width: 230,
+                    height: 128,
+                });
+            }
+        }
+        let mut no_loop_watermark = watermark.clone();
+        if let PipelineFilter::Overlay(overlay) = &mut no_loop_watermark {
+            overlay.secondary.truncate(1);
+        }
+        let no_loop_sec = secondary_chain(
+            no_loop_watermark,
+            Some(accel.clone()),
+            &ffmpeg_info_with_filters(&[KnownVideoFilter::OverlayVaapi]),
+            sdr_state(FrameSurface::Vaapi, PixelFormat::Nv12),
+        );
+        assert!(
+            no_loop_sec.contains(
+                "scale=230:128:flags=bicubic,setsar=1,format=rgba,hwupload=derive_device=vaapi"
+            ),
+            "unexpected secondary: {no_loop_sec}"
+        );
+
         let sec = secondary_chain(
-            periodic_watermark(Vec::new()),
+            watermark,
             Some(accel),
             &ffmpeg_info_with_filters(&[KnownVideoFilter::OverlayVaapi]),
             sdr_state(FrameSurface::Vaapi, PixelFormat::Nv12),
         );
 
         assert!(
-            sec.contains("setsar=1,format=bgra,loop=-1:1,fade="),
+            sec.contains("scale=230:128:flags=bicubic,setsar=1,format=rgba,loop=-1:1,fade="),
             "unexpected secondary: {sec}"
         );
         assert!(

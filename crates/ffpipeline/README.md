@@ -37,3 +37,11 @@ The scheduler emits playout schema `0.0.8` and sets the per-item field, for exam
 `start_ms` is relative to that playout item's start, not the original media file.
 Use zero for an item already in its credits. This adds no automatic credit detection
 or schedule shortening. Existing playout versions remain readable.
+
+## VAAPI overlays
+
+VAAPI overlays use RGBA secondary frames. BGRA is reordered in software before
+upload because narrow BGRA surfaces were observed to corrupt rows during a
+VAAPI upload/download round trip. `accel/vaapi.rs` selects this path only when
+RGBA VPP support is reported; otherwise the existing software overlay remains
+in use. The conversion preserves alpha, requested dimensions and placement.

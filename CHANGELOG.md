@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Playout schema 0.0.8: optional per-item `credit_squeeze` shrinks SDR video over a local still at an item-relative marker, retaining audio and the original end time. Requires VAAPI/Vulkan sharing and the fork runtime with `concat=preserve_ts`; unsupported items remain full-screen and report `credit_squeeze_unavailable`.
 
 ### Fixed
+- Upload VAAPI overlays as RGBA to avoid streaked narrow watermarks without changing their size or position; retain software overlay when RGBA is unsupported.
 - Scale BGRA image subtitles on VAAPI with default scaling, avoiding software canvas enlargement before upload; retain software scaling for custom flags or unsupported hardware.
 - Limit repeated PGS subtitle images to the video frame rate before scaling, avoiding stalled burn-in startup on high-resolution video.
 
