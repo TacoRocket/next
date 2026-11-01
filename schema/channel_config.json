@@ -221,7 +221,7 @@
       "type": "object",
       "properties": {
         "direct_nv12_handoff": {
-          "description": "When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.\n4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.\nNeeds the same patched ffmpeg.",
+          "description": "When `native_nv12_output` is not requested or the active layout is ineligible,\nstill hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.\nNeeds the same patched ffmpeg.",
           "type": "boolean",
           "default": false
         },
@@ -240,7 +240,7 @@
           "pattern": "^[a-z0-9_]+$"
         },
         "native_nv12_output": {
-          "description": "Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead\nof converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and\napplies only when the picture fills the output frame.",
+          "description": "Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead\nof converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and\napplies to positive-even active picture dimensions before any padding.",
           "type": "boolean",
           "default": false
         },
@@ -473,6 +473,48 @@
           ],
           "default": null,
           "pattern": "^[a-z0-9_.+-]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ScaleVaapiMode": {
+      "oneOf": [
+        {
+          "description": "Let the VAAPI driver choose its default scaling algorithm.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Prefer the driver's fast scaling algorithm.",
+          "type": "string",
+          "const": "fast"
+        },
+        {
+          "description": "Prefer the driver's high-quality scaling algorithm.",
+          "type": "string",
+          "const": "hq"
+        },
+        {
+          "description": "Use nonlinear anamorphic scaling where the driver supports it.",
+          "type": "string",
+          "const": "nl_anamorphic"
+        }
+      ]
+    },
+    "ScaleVaapiOptions": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "FFmpeg VAAPI scaling algorithm. Omitted leaves FFmpeg's existing choice unchanged.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScaleVaapiMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
@@ -716,6 +758,18 @@
           ],
           "default": null
         },
+        "scale_vaapi": {
+          "description": "Options for VAAPI video and bitmap-subtitle resizing. Requires the fork worker.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScaleVaapiOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "tonemap": {
           "description": "Options for the [`tonemap`](https://ffmpeg.org/ffmpeg-filters.html#tonemap-1) filter, used\nfor software tonemapping.",
           "anyOf": [
@@ -901,6 +955,7 @@
             "deinterlace_vaapi": null,
             "libplacebo": null,
             "scale": null,
+            "scale_vaapi": null,
             "tonemap": null,
             "tonemap_opencl": null,
             "w3fdif": null,

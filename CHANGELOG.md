@@ -11,12 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Fork credit squeeze now moves into its existing layout over one second instead of cutting directly to it. Joining at or after the marker still starts squeezed. Playout JSON is unchanged; no scheduler migration is required.
 
 ### Added
+- Optional fork `normalization.video.filters.scale_vaapi.mode` selects the VAAPI driver scaling mode for video and bitmap subtitles. Omitted mode preserves existing commands. Keeps upstream channel schema URI 0.1.3; requires a fork worker containing this extension.
 - Optional fork `credit_squeeze.advertisement` plays one moving SDR ad behind a small program inset, switches to ad audio (or silence), and preserves the original program end. The scheduler supplies ad boundaries and elapsed credits time; unsupported or unreadable ads keep the original picture and audio. Requires a supporting fork worker; upstream playout URI remains 0.0.7.
 - Fork channel option `normalization.video.tone_mapping`: `on` (default), `sdr_fallback`, or `off`. SDR fallback preserves compatible HDR and converts unsupported items with an API status reason; Off remains strict. Copied video is unchanged. Keeps upstream schema URI 0.1.3; requires a compatible fork worker.
 - Optional VAAPI HDR10 tone mapping with `normalization.video.hdr_vaapi_lut: true` (default false). Uses the fork's fixed-Hable LUT filter for known limited-range 10-bit BT.2020/PQ input without Dolby Vision, when producing 8-bit output. Missing filters and other inputs retain the existing mapping path.
 - Optional fork field on playout 0.0.7: per-item `credit_squeeze` shrinks SDR video over a local still at an item-relative marker, retaining audio and the original end time. Requires VAAPI/Vulkan sharing and the fork runtime with `concat=preserve_ts`; unsupported items remain full-screen and report `credit_squeeze_unavailable`.
 
 ### Fixed
+- Allow native NV12 CRT output and Experimental point chroma on positive-even active picture sizes before padding, including letterboxed and pillarboxed pictures. Existing runtime capability checks and conversion fallback remain.
 - Preserve moving credit-squeeze advertisement aspect ratio, padding instead of stretching ads whose shape differs from the channel. Still-background squeeze is unchanged.
 - Transcode 10-bit H.264 and 4:2:2 or 4:4:4 H.264/HEVC in video `copy` mode instead of copying them; most hardware players cannot decode them. 10-bit 4:2:0 HEVC still copies.
 - Upload VAAPI overlays as RGBA to avoid streaked narrow watermarks without changing their size or position; retain software overlay when RGBA is unsupported.

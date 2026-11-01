@@ -361,13 +361,13 @@ pub struct CustomShaderOptionsConfig {
     pub input_scale_mode: Option<String>,
     /// Have libplacebo write nv12 straight into the output frame (`nv12_output=native`) instead
     /// of converting with `scale_vulkan`. Needs an ffmpeg whose libplacebo has that option, and
-    /// applies only when the picture fills the output frame.
+    /// applies to positive-even active picture dimensions before any padding.
     pub native_nv12_output: bool,
     /// With `native_nv12_output`, point-sample the output chroma instead of filtering it with
     /// Mitchell. Faster; fine chroma detail can alias.
     pub point_chroma: bool,
-    /// When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.
-    /// 4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.
+    /// When `native_nv12_output` is not requested or the active layout is ineligible,
+    /// still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.
     /// Needs the same patched ffmpeg.
     pub direct_nv12_handoff: bool,
     /// Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with
@@ -397,6 +397,8 @@ pub struct VideoFilterOptionsConfig {
     /// Options for the [`scale`](https://ffmpeg.org/ffmpeg-filters.html#scale-1) filter, used for
     /// software scaling.
     pub scale: Option<ScaleOptions>,
+    /// Options for VAAPI video and bitmap-subtitle resizing. Requires the fork worker.
+    pub scale_vaapi: Option<ScaleVaapiOptions>,
     /// Options for the [`tonemap`](https://ffmpeg.org/ffmpeg-filters.html#tonemap-1) filter, used
     /// for software tonemapping.
     pub tonemap: Option<TonemapOptions>,
@@ -476,6 +478,38 @@ pub struct ScaleOptions {
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ScaleVaapiOptions {
+    /// FFmpeg VAAPI scaling algorithm. Omitted leaves FFmpeg's existing choice unchanged.
+    #[serde(default)]
+    pub mode: Option<ScaleVaapiMode>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleVaapiMode {
+    /// Let the VAAPI driver choose its default scaling algorithm.
+    Default,
+    /// Prefer the driver's fast scaling algorithm.
+    Fast,
+    /// Prefer the driver's high-quality scaling algorithm.
+    Hq,
+    /// Use nonlinear anamorphic scaling where the driver supports it.
+    NlAnamorphic,
+}
+
+impl ScaleVaapiMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Fast => "fast",
+            Self::Hq => "hq",
+            Self::NlAnamorphic => "nl_anamorphic",
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TonemapOptions {
     /// Value for the `tonemap` `tonemap` option. Allowed characters: a-z, 0-9, `_`, `.`, `+`, `-`.
     #[serde(default, deserialize_with = "deserialize_filter_option")]
@@ -540,6 +574,12 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
             },
             scale: ffpipeline::output_settings::ScaleOptions {
                 flags: value.scale.and_then(|o| o.flags),
+            },
+            scale_vaapi: ffpipeline::output_settings::ScaleVaapiOptions {
+                mode: value
+                    .scale_vaapi
+                    .and_then(|o| o.mode)
+                    .map(|mode| mode.as_str().to_owned()),
             },
             tonemap: ffpipeline::output_settings::TonemapOptions {
                 tonemap: value.tonemap.and_then(|o| o.tonemap),
@@ -1110,6 +1150,21 @@ mod tests {
             Err(ChannelError::ChannelConfigFailure(message)) => message,
             other => panic!("expected ChannelConfigFailure, got {:?}", other.map(|_| ())),
         }
+    }
+
+    #[tokio::test]
+    async fn vaapi_scaler_rejects_typos_at_config_load() {
+        for mode in ["default", "fast", "hq", "nl_anamorphic"] {
+            let mut source = base();
+            source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": mode}});
+            let config = load(&[source]).await.unwrap();
+            let options: ffpipeline::output_settings::VideoFilterOptions =
+                config.normalization.video.filters.into();
+            assert_eq!(options.scale_vaapi.mode.as_deref(), Some(mode));
+        }
+        let mut source = base();
+        source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": "defualt"}});
+        assert!(config_error(load(&[source]).await).contains("defualt"));
     }
 
     #[tokio::test]

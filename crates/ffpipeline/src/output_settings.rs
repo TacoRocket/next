@@ -83,6 +83,7 @@ pub struct VideoFilterOptions {
     pub deinterlace_vaapi: DeinterlaceVaapiOptions,
     pub libplacebo: LibplaceboOptions,
     pub scale: ScaleOptions,
+    pub scale_vaapi: ScaleVaapiOptions,
     pub tonemap: TonemapOptions,
     pub tonemap_opencl: TonemapOpenclOptions,
     pub w3fdif: W3fdifOptions,
@@ -107,11 +108,11 @@ pub struct CustomShaderOptions {
     /// `scale_vaapi` `mode` for the input height scale, e.g. `default` for the driver's scaler.
     pub input_scale_mode: Option<String>,
     /// libplacebo writes nv12 straight into the output frame (`nv12_output=native`) instead of
-    /// going through `scale_vulkan`, when the picture fills the frame.
+    /// going through `scale_vulkan`, for supported positive-even active picture dimensions.
     pub native_nv12_output: bool,
     /// With native nv12 output, point-sample the output chroma instead of a Mitchell filter.
     pub point_chroma: bool,
-    /// When native nv12 output doesn't apply (the picture doesn't fill the frame), still hand
+    /// When native nv12 output is not requested or its layout is ineligible, still hand
     /// libplacebo's nv12 straight to VAAPI without `scale_vulkan`.
     pub direct_nv12_handoff: bool,
     /// Draw HDR10 sources too: scale to the input height in 10-bit, tone-map with
@@ -198,6 +199,11 @@ pub struct LibplaceboOptions {
 #[derive(Debug, Default)]
 pub struct ScaleOptions {
     pub flags: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ScaleVaapiOptions {
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Default)]
