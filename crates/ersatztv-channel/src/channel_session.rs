@@ -20,9 +20,10 @@ use ffpipeline::ffmpeg_info::{FfmpegInfo, KnownVideoFilter};
 use ffpipeline::frame_rate::FrameRate;
 use ffpipeline::frame_size::FrameSize;
 use ffpipeline::input::{
-    CreditSqueezeInput, FfmpegInputArgs, GraphicsInput, GraphicsKind, GraphicsLocation,
-    HttpInputOptions, HttpInputSource, InputSettings, InputSource, LavfiInputSource,
-    LocalInputSource, MediaGraphicsOptions, ProbedInput, RtspInputOptions, RtspInputSource,
+    CreditSqueezeAdvertisementInput, CreditSqueezeInput, FfmpegInputArgs, GraphicsInput,
+    GraphicsKind, GraphicsLocation, HttpInputOptions, HttpInputSource, InputSettings, InputSource,
+    LavfiInputSource, LocalInputSource, MediaGraphicsOptions, ProbedInput, RtspInputOptions,
+    RtspInputSource,
 };
 use ffpipeline::keyframe_seek::{
     CopySeekRequest, InputStart, Keyframe, KeyframeLocator, plan_copy_seek,
@@ -776,33 +777,71 @@ impl ChannelSession {
             _ => None,
         };
 
+        let playout_offset = if start_at_zero {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(
+                (self.transcoded_until - current_item.start)
+                    .whole_milliseconds()
+                    .max(0) as u64,
+            )
+        };
         let credit_squeeze = if let Some(squeeze) = &current_item.credit_squeeze {
-            let source = PlayoutItemSource::Local {
-                path: squeeze.background_image.clone(),
-                in_point_ms: None,
-                out_point_ms: None,
-                probe_hint: None,
+            let start = Duration::from_millis(squeeze.start_ms);
+            let source = squeeze.advertisement.as_ref().map_or_else(
+                || PlayoutItemSource::Local {
+                    path: squeeze.background_image.clone(),
+                    in_point_ms: None,
+                    out_point_ms: None,
+                    probe_hint: None,
+                },
+                |ad| ad.source.clone(),
+            );
+            let (in_point_ms, out_point_ms) = source_points_ms(current_item, &source);
+            let in_point = if squeeze.advertisement.is_some() {
+                Duration::from_millis(in_point_ms) + playout_offset.saturating_sub(start)
+            } else {
+                Duration::ZERO
             };
-            let input_source = InputSource::Local(LocalInputSource {
-                path: squeeze.background_image.clone(),
-            });
-            let background = match session.resolve_probe(&source, &input_source).await {
-                Ok(probe_result) if probe_result.is_still_image() => Ok(GraphicsInput {
-                    layer_index: graphics_inputs.len(),
-                    input_source,
-                    probe_result,
-                    stream_index: None,
-                    kind: GraphicsKind::Media(MediaGraphicsOptions {
-                        location: GraphicsLocation::Center,
-                        width_percent: None,
-                        within_source_content: None,
-                        horizontal_margin_percent: None,
-                        vertical_margin_percent: None,
-                        opacity_percent: None,
-                        timing: None,
-                    }),
-                    in_point: Duration::ZERO,
-                }),
+            let background = async {
+                let input_source = session.playout_source_to_input_source(source.clone())?;
+                if squeeze.advertisement.is_some()
+                    && let InputSource::Local(local) = &input_source
+                {
+                    let path = local.expand_path().ok_or(ChannelError::ProbeHintFailure)?;
+                    tokio::fs::File::open(&path)
+                        .await
+                        .map_err(|source| ChannelError::Io {
+                            operation: "open credit squeeze advertisement",
+                            subject: path,
+                            source,
+                        })?;
+                }
+                let probe_result = session.resolve_probe(&source, &input_source).await?;
+                Ok::<_, ChannelError>((input_source, probe_result))
+            }
+            .await;
+            let background = match background {
+                Ok((input_source, probe_result))
+                    if squeeze.advertisement.is_some() || probe_result.is_still_image() =>
+                {
+                    Ok(GraphicsInput {
+                        layer_index: graphics_inputs.len(),
+                        input_source,
+                        probe_result,
+                        stream_index: None,
+                        kind: GraphicsKind::Media(MediaGraphicsOptions {
+                            location: GraphicsLocation::Center,
+                            width_percent: None,
+                            within_source_content: None,
+                            horizontal_margin_percent: None,
+                            vertical_margin_percent: None,
+                            opacity_percent: None,
+                            timing: None,
+                        }),
+                        in_point,
+                    })
+                }
                 Ok(_) => Err(String::from(
                     "Credit squeeze background must be a still image.",
                 )),
@@ -811,8 +850,14 @@ impl ChannelSession {
                 )),
             };
             Some(CreditSqueezeInput {
-                start: Duration::from_millis(squeeze.start_ms),
+                start,
                 background,
+                advertisement: squeeze.advertisement.as_ref().map(|ad| {
+                    CreditSqueezeAdvertisementInput {
+                        elapsed: Duration::from_millis(ad.elapsed_ms),
+                        out_point: Duration::from_millis(out_point_ms),
+                    }
+                }),
             })
         } else {
             None
@@ -820,15 +865,7 @@ impl ChannelSession {
 
         let mut input_settings = InputSettings {
             start: current_item.start,
-            playout_offset: if start_at_zero {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(
-                    (self.transcoded_until - current_item.start)
-                        .whole_milliseconds()
-                        .max(0) as u64,
-                )
-            },
+            playout_offset,
             audio_input: ProbedInput {
                 input_source: audio_input_source,
                 in_point: audio_timing.in_point,

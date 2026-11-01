@@ -11,7 +11,8 @@ use crate::audio_decoder::AudioDecoder;
 use crate::audio_filter::AudioFilter;
 use crate::color::FrameColor;
 use crate::copy_decision::{
-    CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision, video_copy_decision,
+    CopyBlocker, CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision,
+    video_copy_decision,
 };
 use crate::credit_squeeze::{CreditSqueeze, CreditSqueezeBranches, CreditSqueezeColor};
 use crate::degradation::{
@@ -619,13 +620,24 @@ impl Pipeline {
             {
                 Some(String::from("Credit squeeze requires 8-bit VAAPI, Vulkan sharing, and timestamp-preserving concat; playing full-screen."))
             } else if let Ok(background) = &request.background {
-                input_settings.select_graphics_stream(background).is_none().then(|| String::from("Credit squeeze background has no video stream; playing full-screen."))
+                match input_settings.select_graphics_stream(background) {
+                    None => Some(String::from("Credit squeeze background has no video stream; playing full-screen.")),
+                    Some(stream) if request.advertisement.is_some() && (
+                        background.probe_result.is_still_image()
+                        || stream.width.is_none_or(|w| w == 0)
+                        || stream.height.is_none_or(|h| h == 0)
+                        || stream.dv_profile.is_some()
+                        || matches!(stream.color_params.color_transfer.as_deref(), Some("smpte2084" | "arib-std-b67"))
+                        || request.advertisement.as_ref().is_some_and(|ad| ad.out_point <= background.in_point)
+                    ) => Some(String::from("Credit squeeze advertisement must be an SDR video with playable time remaining; playing original picture and audio.")),
+                    Some(_) => None,
+                }
             } else { request.background.as_ref().err().cloned() };
             if let Some(reason) = reason {
                 degradations.add(DegradationCode::CreditSqueezeUnavailable, reason);
                 return None;
             }
-            request.background.as_ref().ok().map(|background| (request.start.saturating_sub(input_settings.playout_offset), background))
+            request.background.as_ref().ok().map(|background| (request.start.saturating_sub(input_settings.playout_offset), background, request))
         });
 
         let initial_state = FrameState {
@@ -964,15 +976,51 @@ impl Pipeline {
             None => {}
         }
 
-        if let Some((start, background)) = credit_squeeze
+        if let Some((start, background, request)) = credit_squeeze
             && let Some(stream) = input_settings.select_graphics_stream(background)
         {
+            let mut extra_input_args = Vec::new();
+            if let Some(ad) = &request.advertisement {
+                if !background.in_point.is_zero()
+                    && !matches!(background.input_source, InputSource::Lavfi(_))
+                {
+                    extra_input_args.extend(args![
+                        "-ss",
+                        format!("{}ms", background.in_point.as_millis())
+                    ]);
+                }
+                extra_input_args.extend(args![
+                    "-t",
+                    format!(
+                        "{}ms",
+                        ad.out_point.saturating_sub(background.in_point).as_millis()
+                    )
+                ]);
+                let audio = ProbedInput {
+                    input_source: background.input_source.clone(),
+                    probe_result: background.probe_result.clone(),
+                    in_point: background.in_point,
+                    out_point: ad.out_point,
+                    stream_index: None,
+                };
+                filters.insert(
+                    0,
+                    PipelineFilter::Audio(AudioFilter::CreditSqueeze {
+                        layer_index: background.layer_index,
+                        stream_index: audio.select_audio_stream().ok().map(|a| a.stream_index),
+                        start,
+                        channels: output_context
+                            .audio_channels
+                            .unwrap_or(audio_stream.channels),
+                    }),
+                );
+            }
             inputs.push(PipelineInput::Graphics {
                 input: background.clone(),
                 layer_index: background.layer_index,
                 index: stream.stream_index,
                 path: background.probe_result.path.clone(),
-                extra_input_args: Vec::new(),
+                extra_input_args,
             });
             let mut normal: Vec<_> = filters
                 .iter()
@@ -981,10 +1029,27 @@ impl Pipeline {
                 .collect();
             let mut credits = normal.clone();
             normal.push(PipelineFilter::Video(CreditSqueezeColor.into()));
+            if request.advertisement.is_some() {
+                credits.retain(|filter| {
+                    !matches!(
+                        filter,
+                        PipelineFilter::Video(VideoFilter::Pad(_) | VideoFilter::Crop(_))
+                    )
+                });
+            }
             for filter in &mut credits {
                 match filter {
                     PipelineFilter::Video(VideoFilter::Shader(shader)) => {
-                        *filter = PipelineFilter::Video(shader.scale.clone().into());
+                        let mut scale = shader.scale.clone();
+                        if request.advertisement.is_some() {
+                            scale.scaling_mode = ScalingMode::ScaleAndPad;
+                        }
+                        *filter = PipelineFilter::Video(scale.into());
+                    }
+                    PipelineFilter::Video(VideoFilter::Scale(scale))
+                        if request.advertisement.is_some() =>
+                    {
+                        scale.scaling_mode = ScalingMode::ScaleAndPad;
                     }
                     PipelineFilter::Video(VideoFilter::Subtitles(subtitles)) => {
                         // The trimmed tail must retain the shared source clock at the join.
@@ -1002,6 +1067,10 @@ impl Pipeline {
             credits.push(PipelineFilter::CreditSqueeze(CreditSqueeze {
                 background_index: background.layer_index,
                 start,
+                advertisement_elapsed: request.advertisement.as_ref().map(|ad| {
+                    ad.elapsed + input_settings.playout_offset.saturating_sub(request.start)
+                }),
+                program_size: initial_state.size,
                 size,
                 shader: squeeze_shader,
                 native_nv12,
@@ -1890,11 +1959,23 @@ fn copy_decisions(
                 },
             )
         }),
-        audio: output_settings
-            .audio
-            .copy
-            .as_ref()
-            .map(|policy| audio_copy_decision(policy, audio_input, audio_stream)),
+        audio: output_settings.audio.copy.as_ref().map(|policy| {
+            let decision = audio_copy_decision(policy, audio_input, audio_stream);
+            if input_settings
+                .credit_squeeze
+                .as_ref()
+                .is_some_and(|s| s.advertisement.is_some())
+            {
+                let mut blockers = match decision {
+                    CopyDecision::Copy => Vec::new(),
+                    CopyDecision::Transcode(blockers) => blockers,
+                };
+                blockers.push(CopyBlocker::CreditSqueezeAudio);
+                CopyDecision::Transcode(blockers)
+            } else {
+                decision
+            }
+        }),
     }
 }
 
@@ -2233,6 +2314,7 @@ mod tests {
             input.credit_squeeze = Some(crate::input::CreditSqueezeInput {
                 start: Duration::from_secs(5),
                 background: Ok(background),
+                advertisement: None,
             });
         }
         let mut output = stereo_output();

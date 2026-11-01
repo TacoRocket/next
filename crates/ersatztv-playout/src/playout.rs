@@ -59,17 +59,28 @@ pub struct PlayoutItem {
     /// when present, is composited below every entry in this collection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graphics: Vec<GraphicsLayer>,
-    /// Shrink the program over a local still at an item-relative marker.
+    /// Shrink the program over a still or advertisement at an item-relative marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit_squeeze: Option<CreditSqueeze>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreditSqueeze {
-    /// Local PNG or JPEG path, readable by the worker.
+    /// Local PNG or JPEG path for still mode; ignored when an advertisement is supplied.
     pub background_image: String,
-    /// Milliseconds after this item's start; zero starts already squeezed.
+    /// Milliseconds after this item's start; ad elapsed time controls entrance progress.
     pub start_ms: u64,
+    /// Moving ad replacing the still and program audio after the marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertisement: Option<CreditSqueezeAdvertisement>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreditSqueezeAdvertisement {
+    /// One ad clip, starting at its source in-point when this item's marker is reached.
+    pub source: PlayoutItemSource,
+    /// Credits time already elapsed at this item's start; keeps the entrance continuous.
+    pub elapsed_ms: u64,
 }
 
 impl PlayoutItem {
