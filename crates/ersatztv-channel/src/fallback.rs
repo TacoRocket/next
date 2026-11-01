@@ -1,8 +1,11 @@
 use std::fmt::{Display, Formatter};
+use std::time::Duration;
 
 use ersatztv_channel::error::ChannelError;
 use ersatztv_playout::playout::PlayoutItem;
 use time::OffsetDateTime;
+
+use crate::channel_session::item_is_live;
 
 #[derive(Debug)]
 pub enum FallbackReason {
@@ -17,6 +20,8 @@ pub enum FallbackReason {
         item_id: String,
         start: OffsetDateTime,
         finish: OffsetDateTime,
+        /// a live item is retried after one fallback instead of waiting out its finish
+        live: bool,
         error: ChannelError,
     },
 
@@ -25,6 +30,8 @@ pub enum FallbackReason {
         item_id: String,
         reached: OffsetDateTime,
         finish: OffsetDateTime,
+        /// a live item is retried after one fallback instead of waiting out its finish
+        live: bool,
     },
 }
 
@@ -43,6 +50,7 @@ impl FallbackReason {
             item_id: item.id.clone(),
             reached,
             finish: item.finish,
+            live: item_is_live(item),
         }
     }
 
@@ -54,6 +62,7 @@ impl FallbackReason {
             item_id: item.id.clone(),
             start: item.start,
             finish: item.finish,
+            live: item_is_live(item),
             error,
         }
     }
@@ -65,6 +74,24 @@ impl FallbackReason {
             FallbackReason::ItemSelectionFailed(_) => None,
             FallbackReason::TranscodeFailed { finish, .. } => Some(*finish),
             FallbackReason::SourceEnded { finish, .. } => Some(*finish),
+        }
+    }
+
+    /// when a fallback starting at `from` should end
+    ///
+    /// A live source that drops or fails to open is retried after one fallback of `duration`,
+    /// capped at its item's finish. Waiting out the finish would keep a live channel dark for
+    /// the rest of a long item even after its source came back.
+    pub fn fallback_finish(&self, from: OffsetDateTime, duration: Duration) -> OffsetDateTime {
+        let after_one = from + duration;
+        match self {
+            FallbackReason::TranscodeFailed {
+                live: true, finish, ..
+            }
+            | FallbackReason::SourceEnded {
+                live: true, finish, ..
+            } => std::cmp::min(*finish, after_one),
+            _ => self.fallback_until().unwrap_or(after_one),
         }
     }
 
@@ -93,16 +120,34 @@ impl FallbackReason {
             }
             FallbackReason::TranscodeFailed {
                 item_id,
+                live: true,
+                error,
+                ..
+            } => log::error!(
+                "live item {item_id} failed, replacing with black/silence and then retrying: {error}"
+            ),
+            FallbackReason::TranscodeFailed {
+                item_id,
                 start,
                 finish,
                 error,
+                ..
             } => log::error!(
                 "item {item_id} ({start} .. {finish}) failed, replacing with fallback: {error}"
             ),
             FallbackReason::SourceEnded {
                 item_id,
                 reached,
+                live: true,
+                ..
+            } => log::warn!(
+                "live item {item_id} source ended at {reached}, replacing with black/silence and then retrying"
+            ),
+            FallbackReason::SourceEnded {
+                item_id,
+                reached,
                 finish,
+                ..
             } => log::warn!(
                 "item {item_id} source ended at {reached}, replacing with fallback until {finish}"
             ),
@@ -162,6 +207,7 @@ pub fn error_card_subtitle(message: &str, width: u32, height: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ersatztv_playout::playout::PlayoutItemSource;
     use time::macros::datetime;
 
     use super::*;
@@ -217,6 +263,86 @@ mod tests {
             FallbackReason::SourceEnded { reached, .. } if reached == item.start
         ));
         assert_eq!(reason.fallback_until(), Some(item.finish));
+        assert_eq!(
+            reason.fallback_finish(item.start, Duration::from_secs(60)),
+            item.finish
+        );
+    }
+
+    fn live_item() -> PlayoutItem {
+        PlayoutItem {
+            id: String::from("live"),
+            start: datetime!(2026-01-01 12:00 UTC),
+            finish: datetime!(2026-01-01 13:00 UTC),
+            source: Some(PlayoutItemSource::Http {
+                uri: String::from("https://example.com/live.m3u8"),
+                is_live: Some(true),
+                in_point_ms: None,
+                out_point_ms: None,
+                headers: None,
+                user_agent: None,
+                timeout_us: None,
+                reconnect: None,
+                reconnect_delay_max: None,
+                keep_alive: None,
+                probe_hint: None,
+            }),
+            tracks: None,
+            watermark: None,
+            graphics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn live_source_ended_retries_after_one_fallback() {
+        let item = live_item();
+        let reached = datetime!(2026-01-01 12:05 UTC);
+        let reason = FallbackReason::from_transcode_error(
+            &item,
+            ChannelError::SourceEnded {
+                item_id: item.id.clone(),
+                reached,
+            },
+        );
+
+        assert!(matches!(
+            reason,
+            FallbackReason::SourceEnded { live: true, .. }
+        ));
+        assert_eq!(
+            reason.fallback_finish(reached, Duration::from_secs(60)),
+            datetime!(2026-01-01 12:06 UTC)
+        );
+    }
+
+    #[test]
+    fn live_retry_never_runs_past_the_item() {
+        let item = live_item();
+        let reached = datetime!(2026-01-01 12:59:30 UTC);
+        let reason = FallbackReason::source_ended(&item, reached);
+
+        assert_eq!(
+            reason.fallback_finish(reached, Duration::from_secs(60)),
+            item.finish
+        );
+    }
+
+    #[test]
+    fn live_transcode_failure_retries_after_one_fallback() {
+        let item = live_item();
+        let reason = FallbackReason::from_transcode_error(
+            &item,
+            ChannelError::StreamFailure(String::from("503")),
+        );
+
+        assert!(matches!(
+            reason,
+            FallbackReason::TranscodeFailed { live: true, .. }
+        ));
+        assert_eq!(
+            reason.fallback_finish(item.start, Duration::from_secs(60)),
+            datetime!(2026-01-01 12:01 UTC)
+        );
     }
 
     #[test]

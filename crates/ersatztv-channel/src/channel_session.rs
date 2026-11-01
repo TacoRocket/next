@@ -505,7 +505,11 @@ impl ChannelSession {
                 // an ended pass may still output a short tail
                 if let ChannelError::SourceEnded { reached, .. } = &e {
                     self.transcoded_until = *reached;
-                    self.ended_item_id = Some(current_item.id.clone());
+                    // a finite source that ended early would only end early again, but a
+                    // dropped live source is retried once its fallback has played
+                    if !item_is_live(&current_item) {
+                        self.ended_item_id = Some(current_item.id.clone());
+                    }
                 }
                 let reason = FallbackReason::from_transcode_error(&current_item, e);
                 reason.log(&self.transcoded_until);
@@ -1426,9 +1430,7 @@ impl ChannelSession {
             None
         };
 
-        let finish = reason
-            .fallback_until()
-            .unwrap_or(self.transcoded_until + duration);
+        let finish = reason.fallback_finish(self.transcoded_until, duration);
         fallback_item(
             self.transcoded_until,
             finish,
@@ -2112,6 +2114,18 @@ fn source_points_ms(item: &PlayoutItem, source: &PlayoutItemSource) -> (u64, u64
         }
         _ => (0, item_duration_ms),
     }
+}
+
+/// whether any of the item's video or audio sources is live, by the same track-then-item
+/// precedence the transcode uses
+pub(crate) fn item_is_live(item: &PlayoutItem) -> bool {
+    [
+        ChannelSession::resolve_source(item, |t| t.video.as_ref()),
+        ChannelSession::resolve_source(item, |t| t.audio.as_ref()),
+    ]
+    .iter()
+    .flatten()
+    .any(source_is_live)
 }
 
 fn source_is_live(source: &PlayoutItemSource) -> bool {
