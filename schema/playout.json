@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ersatztv.org/playout/version/0.0.8",
+  "$id": "https://ersatztv.org/playout/version/0.0.7",
   "title": "Playout",
   "description": "A playout schedule for a single time window.\n\nFiles should be named `{start}_{finish}.json` using compact ISO 8601 (no separators), e.g. `20260413T000000.000000000-0500_20260414T002131.620000000-0500.json`, so that the channel can locate the correct file for the current time.",
   "type": "object",

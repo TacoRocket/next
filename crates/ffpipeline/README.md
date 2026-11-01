@@ -28,7 +28,9 @@ The item-relative marker has the worker's elapsed playout time subtracted once;
 joining after the marker starts squeezed. Missing settings leave ordinary items
 unchanged. The scheduler owns marker selection and the original item end.
 
-The scheduler emits playout schema `0.0.8` and sets the per-item field, for example:
+Credit squeeze is an optional fork field on playout `0.0.7`. The scheduler must use a
+fork worker release supporting this field; older workers may ignore it and play
+full-screen. The scheduler sets the per-item field, for example:
 
 ```json
 "credit_squeeze": { "background_image": "/artwork/background.png", "start_ms": 60000 }
