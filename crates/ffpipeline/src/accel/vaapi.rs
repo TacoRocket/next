@@ -19,8 +19,8 @@ use crate::pipeline::{
 use crate::probe::ProbeResultVideoStream;
 use crate::video_codec::VideoCodec;
 use crate::video_filter::{
-    DeinterlaceFilter, HwMapFilter, PadFilter, ScaleFilter, ShaderFilter, ToneMapFilter,
-    TransposeDir, TransposeFilter, VideoFilter, VideoFilterOp,
+    DeinterlaceFilter, HwMapFilter, PadFilter, ScaleFilter, ShaderFilter, SubtitleImageScaleFilter,
+    ToneMapFilter, TransposeDir, TransposeFilter, VideoFilter, VideoFilterOp,
 };
 
 #[derive(Debug, Clone, PartialEq, strum::Display, Serialize)]
@@ -126,6 +126,15 @@ impl HwAccel for Vaapi {
                     hdr: *hdr,
                 }
                 .into()
+            }
+
+            VideoFilter::SubtitleImageScale(SubtitleImageScaleFilter { size, flags })
+                if ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
+                    && current_state.pixel_format == PixelFormat::Bgra
+                    && self.capabilities.vpp_supports_format(&PixelFormat::Bgra)
+                    && flags.as_deref().is_none_or(|flags| flags == "bicubic") =>
+            {
+                SubtitleImageScaleVaapi { size: *size }.into()
             }
 
             VideoFilter::Scale(ScaleFilter { size, .. })
@@ -477,6 +486,36 @@ impl HwAccel for Vaapi {
         to: &PixelFormat,
     ) -> bool {
         self.capabilities.vpp_supports_format(to)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SubtitleImageScaleVaapi {
+    pub(crate) size: FrameSize,
+}
+
+impl VideoFilterOp for SubtitleImageScaleVaapi {
+    fn evaluate(&self, _state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
+        None
+    }
+
+    fn apply_to(&self, state: &mut FrameState) {
+        state.size = self.size;
+        state.surface = FrameSurface::Vaapi;
+        state.set_square_pixels();
+    }
+
+    fn required_surface(&self) -> Option<FrameSurface> {
+        Some(FrameSurface::Vaapi)
+    }
+
+    fn as_arg(&self) -> Option<String> {
+        // The subtitle's centered overlay supplies the transparent margins. Fit the
+        // decoded canvas at runtime, including when its size was unknown to the probe.
+        Some(format!(
+            "scale_vaapi={}:{}:format=bgra:force_original_aspect_ratio=decrease,setsar=1",
+            self.size.width, self.size.height
+        ))
     }
 }
 
@@ -922,6 +961,46 @@ mod tests {
             rotation: None,
             decoder_frames: false,
             sar_written: false,
+        }
+    }
+
+    #[test]
+    fn subtitle_scale_uses_bgra_vaapi_instead_of_software_upscale() {
+        let mut vaapi = make_vaapi();
+        vaapi
+            .capabilities
+            .vpp_pixel_formats
+            .insert(libva_sys::VA_FOURCC_BGRA);
+        let info = make_ffmpeg_info(&[KnownVideoFilter::ScaleVaapi]);
+        let state = FrameState {
+            surface: FrameSurface::System,
+            pixel_format: PixelFormat::Bgra,
+            ..make_frame_state()
+        };
+        for flags in [None, Some("bicubic"), Some("lanczos")] {
+            let filter = crate::video_filter::SubtitleImageScaleFilter {
+                size: FrameSize {
+                    width: 3840,
+                    height: 2160,
+                },
+                flags: flags.map(str::to_owned),
+            }
+            .into();
+            let best = vaapi.best_filter(&filter, &info, &state, &VideoFilterOptions::default());
+            if flags == Some("lanczos") {
+                assert_eq!(best.as_arg(), filter.as_arg());
+                continue;
+            }
+            assert_eq!(best.required_surface(), Some(FrameSurface::Vaapi));
+            assert_eq!(
+                best.as_arg().as_deref(),
+                Some(
+                    "scale_vaapi=3840:2160:format=bgra:force_original_aspect_ratio=decrease,setsar=1"
+                )
+            );
+            let unsupported =
+                make_vaapi().best_filter(&filter, &info, &state, &VideoFilterOptions::default());
+            assert_eq!(unsupported.as_arg(), filter.as_arg());
         }
     }
 

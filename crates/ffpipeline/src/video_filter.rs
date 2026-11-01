@@ -85,6 +85,7 @@ pub enum VideoFilter {
     // VAAPI hardware filters
     DeinterlaceVaapi(accel::vaapi::DeinterlaceVaapi),
     ScaleVaapi(accel::vaapi::ScaleVaapi),
+    SubtitleImageScaleVaapi(accel::vaapi::SubtitleImageScaleVaapi),
     PadVaapi(accel::vaapi::PadVaapi),
     FormatVaapi(accel::vaapi::FormatVaapi),
     TonemapVaapi(accel::vaapi::TonemapVaapi),
