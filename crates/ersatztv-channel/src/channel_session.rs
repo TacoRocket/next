@@ -138,6 +138,11 @@ pub struct ChannelSession {
     dynamic_http_client: reqwest::Client,
     // after one failure, fallbacks use black so the fallback itself can't keep failing
     background_image_failed: bool,
+    // the error card shares the channel's output settings, so it fails exactly when they are
+    // the problem; after that, fallbacks use the audio encoder's defaults, and after another
+    // failure, software video
+    fallback_default_audio: bool,
+    fallback_software_video: bool,
     degradation_report: Option<DegradationReport>,
 }
 
@@ -258,6 +263,8 @@ impl ChannelSession {
             input_starts: HashMap::new(),
             dynamic_http_client,
             background_image_failed: false,
+            fallback_default_audio: false,
+            fallback_software_video: false,
             degradation_report,
         })
     }
@@ -536,18 +543,30 @@ impl ChannelSession {
                 }
                 let reason = FallbackReason::from_transcode_error(&current_item, e);
                 reason.log(&self.transcoded_until);
-                if is_fallback && let Some(image) = self.background_image() {
-                    log::warn!("fallback background image {image} failed, using black instead");
-                    self.background_image_failed = true;
+                // a failed fallback would only fail the same way again
+                if is_fallback && !self.escalate_fallback() {
+                    return Err(reason.into_error());
                 }
-                let fallback_item = self.fallback_playout_item(&reason, Duration::ZERO).await;
-                // the failed pass may have output segments
-                let pts_time = match self.pts_scanner.get_last_pts().await {
-                    Ok(scanned_pts_time) => Some(scanned_pts_time),
-                    Err(_) => pts_time,
-                };
-                self.transcode_item(&fallback_item, realtime, troubleshoot, pts_time, true)
-                    .await?
+                let mut result = self
+                    .transcode_fallback(&reason, realtime, troubleshoot, pts_time)
+                    .await;
+                loop {
+                    match result {
+                        Ok(ok) => break ok,
+                        Err(e @ (ChannelError::IdleTimeout(_) | ChannelError::Stalled(_))) => {
+                            return Err(e);
+                        }
+                        Err(e) => {
+                            log::warn!("fallback failed: {e}");
+                            if !self.escalate_fallback() {
+                                return Err(e);
+                            }
+                            result = self
+                                .transcode_fallback(&reason, realtime, troubleshoot, pts_time)
+                                .await;
+                        }
+                    }
+                }
             }
         };
 
@@ -671,12 +690,28 @@ impl ChannelSession {
         let is_continuous =
             is_live && (source_is_continuous(&video_source) || source_is_continuous(&audio_source));
 
-        let (audio, video) = stream_output_settings(&self.channel_config.normalization);
+        let (mut audio, mut video) = stream_output_settings(&self.channel_config.normalization);
+        if is_fallback && self.fallback_default_audio {
+            use_default_audio(&mut audio);
+        }
+        let software_video = is_fallback && self.fallback_software_video;
+        if software_video {
+            // a custom shader needs the hardware that just failed
+            video.transcode.filter_options.custom_shader = None;
+        }
         let output_settings = OutputSettings {
             audio,
             video,
-            accel: self.hw_accel.clone(),
-            unavailable_accel: self.unavailable_accel.clone(),
+            accel: if software_video {
+                None
+            } else {
+                self.hw_accel.clone()
+            },
+            unavailable_accel: if software_video {
+                None
+            } else {
+                self.unavailable_accel.clone()
+            },
             format: ffpipeline::output_format::OutputFormat::Hls {
                 playlist: self.output_file.clone(),
                 segment_template: self.output_segment_template.clone(),
@@ -1000,9 +1035,15 @@ impl ChannelSession {
                 self.copy_warned_item_id = Some(current_item.id.clone());
             }
         }
-        let outcome = |text: &str| match &copy_note {
-            Some(note) => format!("{text}\n{note}"),
-            None => text.to_owned(),
+        let outcome = |text: &str| {
+            let mut outcome = match &copy_note {
+                Some(note) => format!("{text}\n{note}"),
+                None => text.to_owned(),
+            };
+            if software_video {
+                outcome.push_str("\nthe fallback used software video, not the accel recorded here");
+            }
+            outcome
         };
 
         self.playlist_manager
@@ -1582,6 +1623,46 @@ impl ChannelSession {
             self.background_image(),
             subtitle,
         )
+    }
+
+    async fn transcode_fallback(
+        &mut self,
+        reason: &FallbackReason,
+        realtime: bool,
+        troubleshoot: bool,
+        pts_time: Option<PtsTime>,
+    ) -> Result<(OffsetDateTime, bool), ChannelError> {
+        let fallback_item = self.fallback_playout_item(reason, Duration::ZERO).await;
+        // the failed pass may have output segments
+        let pts_time = self.last_pts_time(pts_time).await;
+        self.transcode_item(&fallback_item, realtime, troubleshoot, pts_time, true)
+            .await
+    }
+
+    /// Moves fallbacks one step toward settings that can't fail: black instead of the
+    /// background image, then the audio encoder's defaults, then software video. Each step is
+    /// taken once per session; returns false when none is left.
+    fn escalate_fallback(&mut self) -> bool {
+        if let Some(image) = self.background_image() {
+            log::warn!("fallback background image {image} failed, using black instead");
+            self.background_image_failed = true;
+        } else if !self.fallback_default_audio {
+            log::warn!("fallbacks now use the audio encoder's defaults");
+            self.fallback_default_audio = true;
+        } else if !self.fallback_software_video && self.hw_accel.is_some() {
+            log::warn!("fallbacks now use software video");
+            self.fallback_software_video = true;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    async fn last_pts_time(&self, fallback: Option<PtsTime>) -> Option<PtsTime> {
+        match self.pts_scanner.get_last_pts().await {
+            Ok(scanned_pts_time) => Some(scanned_pts_time),
+            Err(_) => fallback,
+        }
     }
 
     fn background_image(&self) -> Option<&str> {
@@ -2215,6 +2296,16 @@ fn stream_output_settings(
     (audio, video)
 }
 
+/// The audio encoder's defaults for an error card, after one failed with the channel's own
+/// settings (e.g. AC-3 cannot encode 96 kHz). The codec stays the channel's.
+fn use_default_audio(audio: &mut AudioOutputSettings) {
+    audio.transcode.bitrate = None;
+    audio.transcode.buffer = None;
+    audio.transcode.channels = None;
+    audio.transcode.sample_rate = None;
+    audio.transcode.loudness = None;
+}
+
 /// Cached because cut files (commercials) play many times. A failed check returns `None` and
 /// keeps the copy.
 async fn input_start_blocker(
@@ -2747,6 +2838,137 @@ mod tests {
         assert_eq!(
             video.transcode.format,
             ffpipeline::pipeline::EncodeFormat::Hevc
+        );
+    }
+
+    #[test]
+    fn default_audio_clears_the_channels_audio_settings() {
+        let normalization: NormalizationConfig = serde_json::from_value(json!({
+            "audio": {
+                "format": "ac3",
+                "channels": 8,
+                "bitrate_kbps": 640,
+                "buffer_kbps": 1280,
+                "sample_rate_hz": 96000,
+                "normalize_loudness": true
+            },
+            "video": {}
+        }))
+        .unwrap();
+        let (mut audio, _) = stream_output_settings(&normalization);
+        assert!(audio.transcode.sample_rate.is_some() && audio.transcode.loudness.is_some());
+
+        use_default_audio(&mut audio);
+
+        let audio = audio.transcode;
+        assert_eq!(
+            (
+                audio.bitrate,
+                audio.buffer,
+                audio.channels,
+                audio.sample_rate
+            ),
+            (None, None, None, None)
+        );
+        assert!(audio.loudness.is_none());
+        assert!(matches!(
+            audio.format,
+            ffpipeline::pipeline::AudioFormat::Ac3
+        ));
+    }
+
+    /// The last fallback step: the audio encoder's defaults, software video and no shader, from
+    /// the most demanding channel settings. It must still build a pipeline with the channel's codecs.
+    #[test]
+    fn fully_escalated_fallback_card_builds_in_software() {
+        let normalization: NormalizationConfig = serde_json::from_value(json!({
+            "audio": {
+                "format": "ac3",
+                "channels": 8,
+                "bitrate_kbps": 640,
+                "sample_rate_hz": 96000,
+                "normalize_loudness": true
+            },
+            "video": {
+                "format": "hevc",
+                "bit_depth": 10,
+                "tone_mapping": "on",
+                "hdr_vaapi_lut": true,
+                "width": 1920,
+                "height": 1080,
+                "bitrate_kbps": 8000,
+                "custom_shader": "void main() {}"
+            }
+        }))
+        .unwrap();
+        let (mut audio, mut video) = stream_output_settings(&normalization);
+        use_default_audio(&mut audio);
+        video.transcode.filter_options.custom_shader = None;
+
+        let start = datetime!(2026-01-01 12:00 UTC);
+        let duration = Duration::from_mins(1);
+        let item = fallback_item(
+            start,
+            start + duration,
+            FrameSize {
+                width: 1920,
+                height: 1080,
+            },
+            FrameRate::default(),
+            duration,
+            None,
+            Some(error_card_track(String::from("fallback.ass"), duration)),
+        );
+        let tracks = item.tracks.as_ref().unwrap();
+        let input = InputSettings {
+            start,
+            playout_offset: Duration::ZERO,
+            audio_input: hinted_input(tracks.audio.as_ref(), duration),
+            video_input: hinted_input(tracks.video.as_ref(), duration),
+            subtitle_input: Some(hinted_input(tracks.subtitle.as_ref(), duration)),
+            graphics_inputs: Vec::new(),
+            credit_squeeze: None,
+            channel_number: None,
+            video_copy_seek: None,
+            video_copy_blockers: Vec::new(),
+        };
+        let output = OutputSettings {
+            audio,
+            video,
+            accel: None,
+            unavailable_accel: None,
+            format: OutputFormat::Hls {
+                playlist: String::from("ffmpeg.m3u8"),
+                segment_template: String::from("live%06d.ts"),
+                troubleshoot: false,
+            },
+            pts_offset: None,
+            realtime: false,
+            is_live: false,
+            frame_rate: None,
+            subtitle_mode: SubtitleMode::Burn,
+            fonts_folder: None,
+            subtitle_force_style: None,
+            reports_folder: None,
+            report_id: None,
+        };
+
+        let mut pipeline =
+            pipeline::generate_pipeline(&FfmpegInfo::default(), input, output).unwrap();
+        pipeline.optimize();
+        let args = pipeline.args();
+        for (option, value) in [("-vcodec", "libx265"), ("-acodec", "ac3")] {
+            let index = args.iter().rposition(|a| a == option).expect(option);
+            assert_eq!(args[index + 1], value, "{args:?}");
+        }
+        for absent in ["-ar", "-ac", "-b:a"] {
+            assert!(!args.iter().any(|a| a == absent), "{absent} in {args:?}");
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("loudnorm") || a.contains("vaapi")),
+            "{args:?}"
         );
     }
 

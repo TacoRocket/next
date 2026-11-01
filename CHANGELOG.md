@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Fixed
 - Allow native NV12 CRT output and Experimental point chroma on positive-even active picture sizes before padding, including letterboxed and pillarboxed pictures. Existing runtime capability checks and conversion fallback remain.
 - Keep incoming HLS audio packets from overlapping the previous job's audio without moving the video timeline. Whole overlapping packets are dropped, which can leave a gap shorter than one audio packet. Mark transport continuity-counter resets on every FFmpeg job, including jobs with continuing timestamps.
+- Keep the channel up when the error card itself fails. The card steps toward settings that can't fail, one step per failure and each once per session: black instead of the background image, then the audio encoder's defaults, then software video. Before, a setting the encoder rejects (e.g. AC-3 at 96 kHz) failed the program and then the card, and the worker exited.
 - Preserve moving credit-squeeze advertisement aspect ratio, padding instead of stretching ads whose shape differs from the channel. Still-background squeeze is unchanged.
 - Transcode 10-bit H.264 and 4:2:2 or 4:4:4 H.264/HEVC in video `copy` mode instead of copying them; most hardware players cannot decode them. 10-bit 4:2:0 HEVC still copies.
 - Upload VAAPI overlays as RGBA to avoid streaked narrow watermarks without changing their size or position; retain software overlay when RGBA is unsupported.
