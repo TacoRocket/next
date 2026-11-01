@@ -29,6 +29,8 @@ impl CopyDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CopyBlocker {
     CodecNotAllowed(String),
+    /// Most hardware players decode H.264 only as 8-bit 4:2:0, and HEVC only as 4:2:0.
+    PixelFormat(String),
     StillImage,
     GraphicsLayers,
     ImageSubtitle,
@@ -53,6 +55,7 @@ impl fmt::Display for CopyBlocker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CopyBlocker::CodecNotAllowed(codec) => write!(f, "{codec} is not in copy_formats"),
+            CopyBlocker::PixelFormat(pix_fmt) => write!(f, "pixel format {pix_fmt}"),
             CopyBlocker::StillImage => f.write_str("still image"),
             CopyBlocker::GraphicsLayers => f.write_str("graphics layers"),
             CopyBlocker::ImageSubtitle => f.write_str("image subtitles"),
@@ -122,6 +125,8 @@ pub(crate) fn video_copy_decision(
         .is_ok_and(|format| policy.formats.contains(&format));
     if !allowed {
         blockers.push(CopyBlocker::CodecNotAllowed(stream.codec.clone()));
+    } else if !copyable_pixel_format(&stream.codec, &stream.pix_fmt) {
+        blockers.push(CopyBlocker::PixelFormat(stream.pix_fmt.clone()));
     }
 
     for (blocked, blocker) in [
@@ -146,6 +151,17 @@ pub(crate) fn video_copy_decision(
     }
 
     CopyDecision::from_blockers(blockers)
+}
+
+/// The codec name alone does not say a player can decode it: 10-bit H.264 (High 10) and
+/// 4:2:2 or 4:4:4 video are still `h264`/`hevc`. Matches ffprobe's pixel format names, since
+/// `PixelFormat::parse` reads formats it does not know as 8-bit. An unprobed format copies.
+fn copyable_pixel_format(codec: &str, pix_fmt: &str) -> bool {
+    match codec {
+        "h264" => matches!(pix_fmt, "" | "yuv420p" | "yuvj420p"),
+        "hevc" => matches!(pix_fmt, "" | "yuv420p" | "yuvj420p" | "yuv420p10le"),
+        _ => true,
+    }
 }
 
 pub(crate) fn audio_copy_decision(
@@ -273,6 +289,67 @@ mod tests {
         assert_eq!(
             audio_copy_decision(&CopyPolicy::default(), &local("matroska"), &audio("flac")),
             CopyDecision::Transcode(vec![CopyBlocker::CodecNotAllowed(String::from("flac"))])
+        );
+    }
+
+    #[test]
+    fn pixel_formats_players_cannot_decode_transcode() {
+        let decide = |codec: &str, pix_fmt: &str| {
+            decide_video(
+                &local("matroska"),
+                &ProbeResultVideoStream {
+                    pix_fmt: pix_fmt.to_owned(),
+                    ..video(codec)
+                },
+            )
+        };
+
+        for (codec, pix_fmt) in [
+            ("h264", "yuv420p"),
+            ("h264", "yuvj420p"),
+            ("h264", ""),
+            ("hevc", "yuv420p"),
+            ("hevc", "yuv420p10le"),
+            ("hevc", ""),
+        ] {
+            assert!(decide(codec, pix_fmt).is_copy(), "{codec} {pix_fmt}");
+        }
+        for (codec, pix_fmt) in [
+            ("h264", "yuv420p10le"),
+            ("h264", "yuv422p"),
+            ("h264", "yuv422p10le"),
+            ("h264", "yuv444p"),
+            ("hevc", "yuv422p10le"),
+            ("hevc", "yuv444p"),
+        ] {
+            assert_eq!(
+                decide(codec, pix_fmt),
+                CopyDecision::Transcode(vec![CopyBlocker::PixelFormat(pix_fmt.to_owned())]),
+                "{codec} {pix_fmt}"
+            );
+        }
+        assert_eq!(
+            CopyDecisions {
+                video: Some(decide("h264", "yuv420p10le")),
+                audio: None,
+            }
+            .transcode_summary()
+            .as_deref(),
+            Some("video (pixel format yuv420p10le)")
+        );
+    }
+
+    #[test]
+    fn codec_outside_policy_does_not_report_pixel_format() {
+        assert_eq!(
+            decide_video(
+                &local("matroska"),
+                &ProbeResultVideoStream {
+                    pix_fmt: String::from("yuv422p10le"),
+                    ..video("prores")
+                },
+            ),
+            CopyDecision::Transcode(vec![CopyBlocker::CodecNotAllowed(String::from("prores"))])
         );
     }
 

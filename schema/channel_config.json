@@ -937,7 +937,7 @@
           "minimum": 0
         },
         "mode": {
-          "description": "Whether to transcode every item or copy items whose codec allows it. In `copy` mode, items\nwith graphics, burned-in subtitles, still images, Dolby Vision profile 5 or AVI sources are\nalways transcoded.",
+          "description": "Whether to transcode every item or copy items whose codec allows it. In `copy` mode, items\nwith graphics, burned-in subtitles, still images, Dolby Vision profile 5 or AVI sources are\nalways transcoded, as is video most players cannot decode: 10-bit H.264, and 4:2:2 or 4:4:4\nH.264 or HEVC.",
           "$ref": "#/$defs/StreamMode",
           "default": "transcode"
         },
