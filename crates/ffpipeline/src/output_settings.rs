@@ -71,6 +71,7 @@ pub struct VideoTranscodeSettings {
     pub buffer: Option<Kbps>,
     pub size: Option<FrameSize>,
     pub scaling_mode: ScalingMode,
+    pub preserve_source_aspect: bool,
     pub deinterlace: bool,
     pub filter_options: VideoFilterOptions,
 }

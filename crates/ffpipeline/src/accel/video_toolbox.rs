@@ -111,7 +111,7 @@ impl HwAccel for VideoToolbox {
     fn metadata_bsf(&self, codec: &VideoCodec) -> Option<MetadataBsf> {
         (codec.codec_name == "h264_videotoolbox").then_some(MetadataBsf {
             filter: "h264_metadata",
-            square_pixels: true,
+            sample_aspect_ratio: Some((1, 1)),
             bt709: false,
         })
     }

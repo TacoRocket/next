@@ -401,6 +401,7 @@ pub struct Pipeline {
 
     input_request_context: FfmpegInputRequestContext,
     output_context: OutputContext,
+    output_sample_aspect_ratio: Option<(u64, u64)>,
 }
 
 impl Pipeline {
@@ -467,14 +468,15 @@ impl Pipeline {
         let video_transcode = &final_output_settings.video.transcode;
         let is_still_image = input_settings.video_input.probe_result.is_still_image();
 
-        let subtitle_burn = subtitle_burn(&input_settings, &final_output_settings, video_stream);
+        let original_subtitle_burn =
+            subtitle_burn(&input_settings, &final_output_settings, video_stream);
         let copy_decisions = copy_decisions(
             &input_settings,
             &final_output_settings,
             video_stream,
             &input_settings.audio_input,
             audio_stream,
-            subtitle_burn.as_ref(),
+            original_subtitle_burn.as_ref(),
         );
 
         let audio_codec = match (
@@ -674,6 +676,30 @@ impl Pipeline {
             decoder_frames: video_decoder.output_surface() != FrameSurface::System,
             sar_written: false,
         };
+
+        // Compose in square pixels at the program's display shape, then fit the completed
+        // image into the fixed encoded raster. Logos, subtitles and squeeze share this canvas.
+        let source_aspect_geometry = (video_transcode.preserve_source_aspect
+            && video_encoder != VideoEncoder::Copy)
+            .then_some(video_transcode.size)
+            .flatten()
+            .map(|encoded| {
+                let mut display_state = initial_state.clone();
+                display_state.apply_rotation();
+                (encoded, encoded.square_pixel_size_contain(&display_state))
+            });
+        if let Some((_, display)) = source_aspect_geometry {
+            final_output_settings.video.transcode.size = Some(display);
+            final_output_settings.video.transcode.scaling_mode = ScalingMode::ScaleAndPad;
+        }
+        let video_transcode = &final_output_settings.video.transcode;
+        let subtitle_burn = subtitle_burn(&input_settings, &final_output_settings, video_stream);
+        let output_sample_aspect_ratio = source_aspect_geometry.map(|(encoded, display)| {
+            (
+                u64::from(display.width) * u64::from(encoded.height),
+                u64::from(display.height) * u64::from(encoded.width),
+            )
+        });
 
         // copy can't change the rate; only items already at the target are copied
         let output_frame_rate = final_output_settings
@@ -1079,7 +1105,8 @@ impl Pipeline {
                 advertisement_elapsed: request.advertisement.as_ref().map(|ad| {
                     ad.elapsed + input_settings.playout_offset.saturating_sub(request.start)
                 }),
-                program_size: initial_state.size,
+                program_size: source_aspect_geometry
+                    .map_or(initial_state.size, |(_, display)| display),
                 size,
                 shader: squeeze_shader,
                 native_nv12,
@@ -1336,6 +1363,18 @@ impl Pipeline {
             }));
         }
 
+        if let Some((encoded, _)) = source_aspect_geometry {
+            filters.push(PipelineFilter::Video(
+                ScaleFilter {
+                    size: Some(encoded),
+                    scaling_mode: ScalingMode::Stretch,
+                    input_is_anamorphic: false,
+                    flags: video_transcode.filter_options.scale.flags.clone(),
+                }
+                .into(),
+            ));
+        }
+
         let mut env_vars = Vec::new();
 
         if let Some(reports_folder) = final_output_settings
@@ -1419,6 +1458,7 @@ impl Pipeline {
                 OutputOption::AudioChannels(final_output_settings.audio.transcode.channels),
                 OutputOption::AudioSampleRate(final_output_settings.audio.transcode.sample_rate),
                 OutputOption::VideoCodec(video_encoder),
+                OutputOption::VideoAspect(source_aspect_geometry.map(|(_, display)| display)),
             ]
             .into_iter()
             .chain(copy_output_options)
@@ -1438,6 +1478,7 @@ impl Pipeline {
             .collect(),
             input_request_context,
             output_context,
+            output_sample_aspect_ratio,
             env_vars,
             degradations,
         })
@@ -1508,6 +1549,9 @@ impl Pipeline {
                 .as_ref()
                 .and_then(|a| a.metadata_bsf(codec))
                 .map(|bsf| MetadataBsf {
+                    sample_aspect_ratio: self
+                        .output_sample_aspect_ratio
+                        .or(bsf.sample_aspect_ratio),
                     bt709: bsf.bt709 && tonemapped,
                     ..bsf
                 })
@@ -2154,6 +2198,7 @@ mod tests {
                         height: 720,
                     }),
                     scaling_mode: ScalingMode::ScaleAndPad,
+                    preserve_source_aspect: false,
                     deinterlace: true,
                     filter_options: VideoFilterOptions::default(),
                 },
@@ -2205,6 +2250,31 @@ mod tests {
                 "-hls_segment_options",
                 "mpegts_flags=+initial_discontinuity"
             ]));
+    }
+
+    #[test]
+    fn source_aspect_removes_baked_bars_but_keeps_encoded_size() {
+        for preserve in [false, true] {
+            let mut input = multichannel_ac3_input("main.mkv");
+            if let crate::probe::ProbeResultStream::Video(video) =
+                &mut input.video_input.probe_result.streams[0]
+            {
+                video.width = Some(640);
+            }
+            let mut output = stereo_output();
+            output.video.transcode.preserve_source_aspect = preserve;
+            let mut pipeline = Pipeline::full(&FfmpegInfo::default(), input, output).unwrap();
+            pipeline.optimize();
+            let args = pipeline.args();
+            let graph = filter_complex(&args);
+            assert_eq!(graph.contains("pad="), !preserve, "{graph}");
+            assert_eq!(args.iter().any(|arg| arg == "-aspect:v"), preserve);
+            if preserve {
+                let index = args.iter().position(|arg| arg == "-aspect:v").unwrap();
+                assert_eq!(args[index + 1], "960:720");
+                assert!(graph.contains("1280:720"), "{graph}");
+            }
+        }
     }
 
     fn hdr10_input() -> InputSettings {
@@ -3330,7 +3400,7 @@ mod tests {
         assert!(!args.iter().any(|a| a == "-bsf:v"), "{args:?}");
     }
 
-    fn video_toolbox_args(format: EncodeFormat) -> ArgVec {
+    fn video_toolbox_args(format: EncodeFormat, preserve_source_aspect: bool) -> ArgVec {
         use crate::capabilities::videotoolbox::VideoToolboxCapabilities;
 
         let accel = HardwareAccel::VideoToolbox(crate::accel::video_toolbox::VideoToolbox {
@@ -3345,6 +3415,7 @@ mod tests {
             ..stereo_output()
         };
         output.video.transcode.format = format;
+        output.video.transcode.preserve_source_aspect = preserve_source_aspect;
         let ffmpeg_info = FfmpegInfo {
             hwaccels: [crate::ffmpeg_info::KnownHardwareAccel::VideoToolbox.to_string()].into(),
             ..FfmpegInfo::default()
@@ -3362,7 +3433,7 @@ mod tests {
 
     #[test]
     fn video_toolbox_h264_writes_sar_with_bsf() {
-        let args = video_toolbox_args(EncodeFormat::H264);
+        let args = video_toolbox_args(EncodeFormat::H264, false);
         let bsfs: Vec<_> = args
             .iter()
             .enumerate()
@@ -3373,8 +3444,18 @@ mod tests {
     }
 
     #[test]
+    fn source_aspect_survives_video_toolbox_header_fix() {
+        let args = video_toolbox_args(EncodeFormat::H264, true);
+        let index = args.iter().position(|arg| arg == "-bsf:v").unwrap();
+        assert_eq!(
+            args[index + 1],
+            "h264_metadata=sample_aspect_ratio=777600/921600"
+        );
+    }
+
+    #[test]
     fn video_toolbox_hevc_has_no_bsf() {
-        let args = video_toolbox_args(EncodeFormat::Hevc);
+        let args = video_toolbox_args(EncodeFormat::Hevc, false);
         assert!(!args.iter().any(|a| a == "-bsf:v"), "{args:?}");
     }
 
@@ -3382,7 +3463,7 @@ mod tests {
     fn metadata_bsf_combines_fixups_into_one_filter() {
         let bsf = MetadataBsf {
             filter: "h264_metadata",
-            square_pixels: true,
+            sample_aspect_ratio: Some((1, 1)),
             bt709: true,
         };
         assert_eq!(

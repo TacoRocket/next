@@ -206,3 +206,29 @@ Early feedback on the **playout schema** and architecture is especially valuable
 ## License
 
 ErsatzTV is licensed under the [MIT License](LICENSE).
+
+## Fork option: preserve program aspect ratio
+
+Set `normalization.video.preserve_source_aspect` to `true` to send each
+transcoded program at its own display shape without baking in channel-sized
+black bars. The default is `false`, retaining the existing scaling policy.
+The option overrides `scaling_mode` and requires configured output dimensions;
+copied video is unchanged.
+
+For example, a 4:3 program on a 1920x1080 channel remains encoded at 1920x1080
+but is tagged for 4:3 display. A player can fill a 4:3 screen, or add its own
+side bars on a widescreen display. A widescreen program still displays wide.
+This cannot remove black bars already present in the source recording.
+
+The pipeline composes the picture, subtitles, watermark and credit squeeze in
+a square-pixel canvas fitted to the source display aspect, then stretches the
+completed image to the fixed encoded raster and sets its display aspect.
+Custom full-frame graphics should be authored for the program's display shape.
+Even-pixel canvas rounding can slightly approximate unusual aspect ratios.
+
+Requires a fork worker release containing this option (not present in
+`v0.2.4-trfork14`). The upstream channel schema URI remains `0.1.3`. Integrators
+must pin a supporting release; an older worker can silently ignore this field.
+Players and output adapters must honor aspect changes at program boundaries.
+Fixed encoded dimensions alone do not guarantee compatibility with every TV
+or HLS client; keep the default for clients that require a fixed display shape.

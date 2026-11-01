@@ -5,22 +5,24 @@ use crate::pipeline::{FrameSurface, PixelFormat};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MetadataBsf {
     pub(crate) filter: &'static str,
-    pub(crate) square_pixels: bool,
+    pub(crate) sample_aspect_ratio: Option<(u64, u64)>,
     pub(crate) bt709: bool,
 }
 
 impl MetadataBsf {
     pub(crate) fn is_empty(&self) -> bool {
-        !self.square_pixels && !self.bt709
+        self.sample_aspect_ratio.is_none() && !self.bt709
     }
 
     pub(crate) fn as_arg(&self) -> ArgVec {
         let mut params = Vec::new();
-        if self.square_pixels {
-            params.push("sample_aspect_ratio=1/1");
+        if let Some((numerator, denominator)) = self.sample_aspect_ratio {
+            params.push(format!("sample_aspect_ratio={numerator}/{denominator}"));
         }
         if self.bt709 {
-            params.push("colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1");
+            params.push(String::from(
+                "colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
+            ));
         }
         args!["-bsf:v", format!("{}={}", self.filter, params.join(":"))]
     }

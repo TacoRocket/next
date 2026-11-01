@@ -2307,6 +2307,7 @@ fn stream_output_settings(
             buffer: video_norm.buffer_kbps.map(Kbps),
             size: video_size,
             scaling_mode: video_norm.scaling_mode.into(),
+            preserve_source_aspect: video_norm.preserve_source_aspect,
             deinterlace: video_norm.deinterlace,
             filter_options: VideoFilterOptions {
                 custom_shader: video_norm.custom_shader.as_deref().map(|glsl| {

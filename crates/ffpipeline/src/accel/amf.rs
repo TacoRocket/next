@@ -147,7 +147,7 @@ impl HwAccel for Amf {
         };
         Some(MetadataBsf {
             filter,
-            square_pixels: false,
+            sample_aspect_ratio: None,
             bt709: true,
         })
     }

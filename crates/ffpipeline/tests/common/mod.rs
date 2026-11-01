@@ -1433,6 +1433,7 @@ pub fn build_output(dir: &Path, params: TestOutputParams) -> OutputSettings {
                 buffer: params.video_buffer,
                 size: params.video_size,
                 scaling_mode: params.scaling_mode,
+                preserve_source_aspect: false,
                 deinterlace: params.deinterlace,
                 filter_options: params.filter_options,
             },

@@ -305,6 +305,12 @@ pub struct VideoNormalizationConfig {
     /// How a source with a different aspect ratio fits `width` and `height`.
     #[serde(default)]
     pub scaling_mode: ScalingMode,
+    /// Preserve each transcoded item's display aspect ratio without baked-in bars, while
+    /// keeping the configured encoded width and height. Overrides `scaling_mode`; copied
+    /// video and channels without an output size are unchanged. Requires a supporting fork
+    /// worker and a player that honors aspect changes at program boundaries. Default false.
+    #[serde(default)]
+    pub preserve_source_aspect: bool,
     /// Output frame rate, `N` or `N/D` (e.g. `25`, `30000/1001`).
     /// Frames are dropped or repeated to match it.
     /// In `copy` mode, only items at this rate are copied. Unset keeps the source rate.
