@@ -328,6 +328,10 @@ pub struct CustomShaderOptionsConfig {
     /// With `native_nv12_output`, point-sample the output chroma instead of filtering it with
     /// Mitchell. Faster; fine chroma detail can alias.
     pub point_chroma: bool,
+    /// When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.
+    /// 4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.
+    /// Needs the same patched ffmpeg.
+    pub direct_nv12_handoff: bool,
     /// Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with
     /// `tonemap_vaapi_lut` (fixed Hable), then draw. Needs that ffmpeg filter and an input
     /// height; otherwise HDR sources play without the shader.

@@ -101,16 +101,22 @@ impl HwAccel for Vaapi {
                 shader,
                 frame,
                 hdr,
-            }) => LibplaceboShaderVaapi {
-                size: *size,
-                shader: shader.clone(),
-                native_nv12: shader.options().native_nv12_output
-                    && *frame == Some(*size)
-                    && ffmpeg_info
-                        .has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output"),
-                hdr: *hdr,
+            }) => {
+                // libplacebo's nv12_output option ships with the patched runtime's writable
+                // nv12 import, which both direct routes need
+                let patched = ffmpeg_info
+                    .has_video_filter_option(&KnownVideoFilter::LibPlacebo, "nv12_output");
+                let native_nv12 =
+                    patched && shader.options().native_nv12_output && *frame == Some(*size);
+                LibplaceboShaderVaapi {
+                    size: *size,
+                    shader: shader.clone(),
+                    native_nv12,
+                    nv12_handoff: patched && !native_nv12 && shader.options().direct_nv12_handoff,
+                    hdr: *hdr,
+                }
+                .into()
             }
-            .into(),
 
             VideoFilter::Scale(ScaleFilter { size, .. })
                 if ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
@@ -657,6 +663,8 @@ pub struct LibplaceboShaderVaapi {
     pub(crate) shader: CustomShader,
     /// libplacebo writes nv12 straight into the output frame, without `scale_vulkan`
     pub(crate) native_nv12: bool,
+    /// libplacebo's ordinary nv12 output goes straight back to VAAPI, without `scale_vulkan`
+    pub(crate) nv12_handoff: bool,
     /// the input is HDR10, tone-mapped by `tonemap_vaapi_lut` after the input height scale
     pub(crate) hdr: bool,
 }
@@ -722,7 +730,11 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
             (
                 "",
                 "chroma_location=topleft:extra_opts='plane_downscaler=mitchell':",
-                "scale_vulkan=format=nv12,",
+                if self.nv12_handoff {
+                    ""
+                } else {
+                    "scale_vulkan=format=nv12,"
+                },
             )
         };
         Some(format!(
@@ -731,6 +743,17 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
             self.size.height,
             self.shader.hex(),
         ))
+    }
+
+    fn envs(&self) -> Vec<EnvironmentVariable> {
+        if !self.native_nv12 && !self.nv12_handoff {
+            return Vec::new();
+        }
+        // the patched runtime's writable import of the mapped nv12 frame
+        vec![EnvironmentVariable {
+            key: String::from("ETV_VAAPI_DIRECT_NV12"),
+            value: String::from("1"),
+        }]
     }
 }
 

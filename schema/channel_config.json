@@ -220,6 +220,11 @@
     "CustomShaderOptionsConfig": {
       "type": "object",
       "properties": {
+        "direct_nv12_handoff": {
+          "description": "When `native_nv12_output` doesn't apply because the picture doesn't fill the frame (e.g.\n4:3 in 16:9), still hand libplacebo's nv12 straight back to VAAPI without `scale_vulkan`.\nNeeds the same patched ffmpeg.",
+          "type": "boolean",
+          "default": false
+        },
         "hdr_vaapi_lut": {
           "description": "Draw HDR10 sources too: scale to `custom_shader_input_height` in 10-bit, tone-map with\n`tonemap_vaapi_lut` (fixed Hable), then draw. Needs that ffmpeg filter and an input\nheight; otherwise HDR sources play without the shader.",
           "type": "boolean",
@@ -846,6 +851,7 @@
           "description": "How the `custom_shader` stage runs. Each option applies only where ffmpeg supports it.",
           "$ref": "#/$defs/CustomShaderOptionsConfig",
           "default": {
+            "direct_nv12_handoff": false,
             "hdr_vaapi_lut": false,
             "input_scale_mode": null,
             "native_nv12_output": false,

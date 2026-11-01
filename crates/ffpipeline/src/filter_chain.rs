@@ -2075,6 +2075,15 @@ pub(crate) mod tests {
     }
 
     fn tier_shader(source: FrameSize, nv12_output: bool) -> Vec<String> {
+        tier_shader_with(source, nv12_output, false).0
+    }
+
+    /// The resolved args and the environment the filters ask for.
+    fn tier_shader_with(
+        source: FrameSize,
+        nv12_output: bool,
+        handoff: bool,
+    ) -> (Vec<String>, Vec<String>) {
         let VideoFilter::Shader(mut shader) = shader_to_1080p() else {
             unreachable!()
         };
@@ -2083,6 +2092,7 @@ pub(crate) mod tests {
                 input_scale_mode: Some("default".to_owned()),
                 native_nv12_output: true,
                 point_chroma: true,
+                direct_nv12_handoff: handoff,
                 hdr_vaapi_lut: false,
             },
         );
@@ -2114,14 +2124,44 @@ pub(crate) mod tests {
                 also_accepts: Vec::new(),
             },
         );
-        chain
-            .filters
-            .iter()
-            .filter_map(|f| match f {
-                PipelineFilter::Video(v) => v.as_arg(),
+        let video = || {
+            chain.filters.iter().filter_map(|f| match f {
+                PipelineFilter::Video(v) => Some(v),
                 _ => None,
             })
-            .collect()
+        };
+        (
+            video().filter_map(|v| v.as_arg()).collect(),
+            video()
+                .flat_map(|v| v.envs())
+                .map(|e| format!("{}={}", e.key, e.value))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn shader_handoff_skips_scale_vulkan_for_a_picture_that_does_not_fill_the_frame() {
+        let four_three = FrameSize {
+            width: 1440,
+            height: 1080,
+        };
+        let (args, envs) = tier_shader_with(four_three, true, true);
+        assert!(
+            !args[0].contains("scale_vulkan")
+                && !args[0].contains("nv12_output")
+                && args[0]
+                    .contains(":chroma_location=topleft:extra_opts='plane_downscaler=mitchell':"),
+            "{args:?}"
+        );
+        assert_eq!(envs, vec!["ETV_VAAPI_DIRECT_NV12=1"]);
+
+        // without the patched runtime's libplacebo option, the filtered route stays
+        let (args, envs) = tier_shader_with(four_three, false, true);
+        assert!(
+            args[0].contains(",format=vulkan,scale_vulkan=format=nv12,"),
+            "{args:?}"
+        );
+        assert!(envs.is_empty(), "{envs:?}");
     }
 
     #[test]

@@ -2062,6 +2062,7 @@ fn stream_output_settings(
                             input_scale_mode: options.input_scale_mode.clone(),
                             native_nv12_output: options.native_nv12_output,
                             point_chroma: options.point_chroma,
+                            direct_nv12_handoff: options.direct_nv12_handoff,
                             hdr_vaapi_lut: options.hdr_vaapi_lut,
                         })
                 }),
