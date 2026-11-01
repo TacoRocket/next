@@ -162,7 +162,12 @@ impl CreditSqueeze {
         } else {
             graph.push(format!("[{background}]format=rgba,hwupload,loop=loop=-1:size=1:start=0,setpts=PTS+{start}/TB[cs_background]"));
         }
-        graph.push(format!("[cs_background][cs_program]libplacebo=inputs=2:w={}:h={}:format=rgba:colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709:pos_x='if(eq(idx,1),ow*{x},0)':pos_y='if(eq(idx,1),oh*{y},0)':pos_w='if(eq(idx,1),ow*{width},ow)':pos_h='if(eq(idx,1),oh*{height},oh)',format=vulkan,{to_vaapi}[cs_composed]", working.width, working.height));
+        let aspect = if self.advertisement_elapsed.is_some() {
+            ":normalize_sar=1"
+        } else {
+            ""
+        };
+        graph.push(format!("[cs_background][cs_program]libplacebo=inputs=2:w={}:h={}:format=rgba{aspect}:colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709:pos_x='if(eq(idx,1),ow*{x},0)':pos_y='if(eq(idx,1),oh*{y},0)':pos_w='if(eq(idx,1),ow*{width},ow)':pos_h='if(eq(idx,1),oh*{height},oh)',format=vulkan,{to_vaapi}[cs_composed]", working.width, working.height));
         let credits_out = out;
         graph.push(format!("[cs_clock_va][cs_composed]overlay_vaapi=eof_action=pass:repeatlast=0,{effect},setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv{download}[{credits_out}]"));
         graph.join(";")

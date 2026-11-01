@@ -52,8 +52,11 @@ The optional fork extension `advertisement` replaces the still with one moving a
 The program moves to the bottom-left over the same one-second cosine entrance,
 ending at 25% of canvas width with 3% left and bottom margins. The inset preserves
 program aspect ratio; its credits branch uses fit scaling without canvas padding
-or cropping. The ad fills the canvas. Deinterlacing, frame-rate conversion,
+or cropping. The ad fits the canvas with black bars when its aspect differs;
+`normalize_sar=1` also preserves anamorphic ad proportions. Deinterlacing, frame-rate conversion,
 rotation, subtitles and the existing post-composition shader still apply.
+Ads decode in software before upload; 4K ads can add substantial CPU work on small
+servers, so 1080p or smaller ad pools keep that cost lower.
 
 ```json
 "credit_squeeze": {

@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Optional fork field on playout 0.0.7: per-item `credit_squeeze` shrinks SDR video over a local still at an item-relative marker, retaining audio and the original end time. Requires VAAPI/Vulkan sharing and the fork runtime with `concat=preserve_ts`; unsupported items remain full-screen and report `credit_squeeze_unavailable`.
 
 ### Fixed
+- Preserve moving credit-squeeze advertisement aspect ratio, padding instead of stretching ads whose shape differs from the channel. Still-background squeeze is unchanged.
 - Transcode 10-bit H.264 and 4:2:2 or 4:4:4 H.264/HEVC in video `copy` mode instead of copying them; most hardware players cannot decode them. 10-bit 4:2:0 HEVC still copies.
 - Upload VAAPI overlays as RGBA to avoid streaked narrow watermarks without changing their size or position; retain software overlay when RGBA is unsupported.
 - Scale BGRA image subtitles on VAAPI with default scaling, avoiding software canvas enlargement before upload; retain software scaling for custom flags or unsupported hardware.
