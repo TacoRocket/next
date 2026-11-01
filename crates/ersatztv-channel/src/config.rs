@@ -14,7 +14,7 @@ use crate::error::{ChannelError, IoContext};
 
 pub const SUPPORTED_SCHEMA: SchemaVersion = SchemaVersion {
     breaking: 1,
-    compatible: 3,
+    compatible: 4,
 };
 pub const SCHEMA: VersionedSchema =
     VersionedSchema::new("https://ersatztv.org/channel/version/", SUPPORTED_SCHEMA);
@@ -264,6 +264,12 @@ pub struct VideoNormalizationConfig {
         deserialize_with = "deserialize_bit_depth"
     )]
     pub bit_depth: u8,
+    /// Convert HDR to SDR when transcoding. Defaults to true. When false, HDR needs 10-bit
+    /// output and an HDR-capable player/display. Dolby Vision profile 5 cannot be preserved;
+    /// incompatible HDR items report an error and use the configured fallback. Copied video
+    /// is unchanged. SDR-only custom shaders are skipped for HDR when this is false.
+    #[serde(default = "default_tone_mapping")]
+    pub tone_mapping: bool,
     /// Width in pixels. Applies only when `height` is also set; otherwise the source size is kept.
     /// The fallback uses 1920 when unset.
     pub width: Option<u32>,
@@ -987,6 +993,10 @@ impl ChannelConfig {
 
 fn default_bit_depth() -> u8 {
     8
+}
+
+fn default_tone_mapping() -> bool {
+    true
 }
 
 fn deserialize_bit_depth<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {

@@ -2081,6 +2081,7 @@ fn stream_output_settings(
         transcode: VideoTranscodeSettings {
             format: video_norm.format.into(),
             bit_depth: video_norm.bit_depth,
+            tone_mapping: video_norm.tone_mapping,
             bitrate: video_norm.bitrate_kbps.map(Kbps),
             buffer: video_norm.buffer_kbps.map(Kbps),
             size: video_size,

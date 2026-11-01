@@ -56,6 +56,21 @@ Finally, there are configuration examples under [examples](examples):
 
 ## Getting Started
 
+### Optional HDR tone mapping
+
+Channel config `0.1.4` adds `normalization.video.tone_mapping`. It defaults to
+`true`, preserving HDR-to-SDR conversion for existing configs. Set it to `false`
+to retain HDR when transcoding for an HDR-capable player and display; use 10-bit
+output, typically HEVC. Changing the channel config applies to a new worker session.
+
+With mapping disabled, an HDR item configured for 8-bit output reports an error
+and uses the configured fallback. Dolby Vision profile 5 also requires mapping;
+disabling it does not provide Dolby Vision passthrough. HDR10-compatible base layers
+can remain HDR, but Dolby Vision metadata preservation is not promised. SDR-only
+custom shaders are skipped for HDR when mapping is off. SDR content and copied
+video retain their existing behavior. Disabling mapping does not make an SDR
+display HDR-capable.
+
 ### Prerequisites
 
 - **ErsatzTV's ffmpeg build.** Use `ffmpeg` and `ffprobe` from [ErsatzTV-ffmpeg](https://github.com/ErsatzTV/ErsatzTV-ffmpeg/releases/latest), either in your `PATH` or referenced by absolute path in `channel.json`. It carries patches and fixes that this project relies on; stock or distro ffmpeg builds are not supported. The Docker image already includes it.

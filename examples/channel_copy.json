@@ -1,5 +1,5 @@
 {
-  "version": "https://ersatztv.org/channel/version/0.1.3",
+  "version": "https://ersatztv.org/channel/version/0.1.4",
   "playout": {
     "folder": "./playout"
   },
@@ -23,6 +23,7 @@
       "copy_formats": ["h264", "hevc"],
       "format": "h264",
       "bit_depth": 8,
+      "tone_mapping": true,
       "bitrate_kbps": 4000,
       "buffer_kbps": 8000,
       "accel": null

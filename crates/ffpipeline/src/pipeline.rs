@@ -580,6 +580,19 @@ impl Pipeline {
             _ => HdrFormat::None,
         };
 
+        if !video_transcode.tone_mapping && video_encoder != VideoEncoder::Copy {
+            if hdr == HdrFormat::Dv5 {
+                return Err(FFPipelineError::HdrPreservationUnsupported(String::from(
+                    "Dolby Vision profile 5 needs tone mapping; enable tone_mapping for this channel",
+                )));
+            }
+            if hdr != HdrFormat::None && video_transcode.bit_depth != 10 {
+                return Err(FFPipelineError::HdrPreservationUnsupported(String::from(
+                    "HDR with tone_mapping disabled needs 10-bit output; select a compatible output profile or enable tone_mapping",
+                )));
+            }
+        }
+
         let initial_state = FrameState {
             size: FrameSize {
                 width: video_stream
@@ -678,7 +691,8 @@ impl Pipeline {
             .custom_shader
             .as_ref()
             .is_some_and(|shader| {
-                shader.options().hdr_vaapi_lut
+                video_transcode.tone_mapping
+                    && shader.options().hdr_vaapi_lut
                     && shader.input_height().is_some()
                     && matches!(hdr, HdrFormat::Hdr10 | HdrFormat::Pq)
                     && initial_state.pixel_format.bit_depth() == 10
@@ -765,8 +779,7 @@ impl Pipeline {
             .into(),
         );
 
-        if shader_tonemaps {
-            // the shader stage tone-maps before it draws
+        if shader_tonemaps || !video_transcode.tone_mapping {
             filters.extend(geometry_filters);
         } else if tonemap_first {
             filters.push(tonemap);
@@ -1943,6 +1956,7 @@ mod tests {
                 transcode: crate::output_settings::VideoTranscodeSettings {
                     format: EncodeFormat::H264,
                     bit_depth: 8,
+                    tone_mapping: true,
                     bitrate: Some(Kbps(2000)),
                     buffer: Some(Kbps(4000)),
                     size: Some(FrameSize {

@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+- Channel config `0.1.4`: `normalization.video.tone_mapping` (default `true`). Set it to `false` to preserve HDR during 10-bit transcoding for compatible players and displays. Incompatible 8-bit HDR output and Dolby Vision profile 5 report an error and use the configured fallback; copied video is unchanged and SDR-only shaders are skipped for HDR.
+
 ### Fixed
 - Scale BGRA image subtitles on VAAPI with default scaling, avoiding software canvas enlargement before upload; retain software scaling for custom flags or unsupported hardware.
 - Limit repeated PGS subtitle images to the video frame rate before scaling, avoiding stalled burn-in startup on high-resolution video.

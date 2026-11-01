@@ -1426,6 +1426,7 @@ pub fn build_output(dir: &Path, params: TestOutputParams) -> OutputSettings {
             transcode: VideoTranscodeSettings {
                 format: params.video_format,
                 bit_depth: params.bit_depth,
+                tone_mapping: true,
                 bitrate: params.video_bitrate,
                 buffer: params.video_buffer,
                 size: params.video_size,

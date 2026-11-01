@@ -58,6 +58,7 @@ pub struct VideoOutputSettings {
 pub struct VideoTranscodeSettings {
     pub format: EncodeFormat,
     pub bit_depth: u8,
+    pub tone_mapping: bool,
     pub bitrate: Option<Kbps>,
     pub buffer: Option<Kbps>,
     pub size: Option<FrameSize>,
