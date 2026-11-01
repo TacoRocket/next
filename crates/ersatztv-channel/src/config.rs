@@ -272,7 +272,8 @@ impl From<ToneMappingMode> for ffpipeline::output_settings::ToneMappingMode {
 pub struct VideoNormalizationConfig {
     /// Whether to transcode every item or copy items whose codec allows it. In `copy` mode, items
     /// with graphics, burned-in subtitles, still images, Dolby Vision profile 5 or AVI sources are
-    /// always transcoded.
+    /// always transcoded, as is video most players cannot decode: 10-bit H.264, and 4:2:2 or 4:4:4
+    /// H.264 or HEVC.
     #[serde(default)]
     pub mode: StreamMode,
     /// Source codecs to copy when `mode` is `copy`. Default: h264, hevc.
