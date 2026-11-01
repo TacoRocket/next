@@ -846,6 +846,17 @@ impl Pipeline {
                 filters.push(PipelineFilter::Overlay(OverlayFilter {
                     kind: SoftwareOverlay::default().into(),
                     secondary: vec![
+                        // Sub2video heartbeats can outpace the video; discard redundant
+                        // PGS frames before scaling and uploading the subtitle canvas.
+                        FpsFilter {
+                            frame_rate: subtitle_stream
+                                .is_pgs_subtitle()
+                                .then(|| {
+                                    FrameRate::parse_target(&output_context.frame_rate.r_frame_rate)
+                                })
+                                .flatten(),
+                        }
+                        .into(),
                         SubtitleImageScaleFilter {
                             size,
                             flags: video_transcode.filter_options.scale.flags.clone(),
@@ -2353,6 +2364,25 @@ mod tests {
                 (path, canvas)
             })
             .collect()
+    }
+
+    #[test]
+    fn pgs_cadence_is_limited_before_scaling_to_the_video_rate() {
+        for target in [None, Some("25")] {
+            let mut input = multichannel_ac3_input("main.mkv");
+            input.subtitle_input =
+                Some(image_subtitle_input("main.mkv", "hdmv_pgs_subtitle", None));
+            let mut output = stereo_output();
+            output.frame_rate = target.and_then(FrameRate::parse_target);
+            let mut pipeline = Pipeline::full(&FfmpegInfo::default(), input, output).unwrap();
+            pipeline.optimize();
+            let filter = filter_complex(&pipeline.args());
+            let rate = target.unwrap_or("30000/1001");
+            assert!(
+                filter.contains(&format!("[0:7]fps={rate},scale=")),
+                "{filter}"
+            );
+        }
     }
 
     #[test]

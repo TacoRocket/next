@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Fixed
+- Limit repeated PGS subtitle images to the video frame rate before scaling, avoiding stalled burn-in startup on high-resolution video.
+
 ## [0.2.4] - 2026-10-31
 ### Added
 - VAAPI: tonemap with `libplacebo` when a Vulkan device on the same GPU is available
