@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::ArgVec;
 use crate::audio_codec::AudioCodec;
 use crate::frame_rate::FrameRate;
+use crate::frame_size::FrameSize;
 use crate::output_format::OutputFormat;
 use crate::pipeline::{Hz, Kbps, OutputContext, PtsOffset};
 use crate::video_codec::{MetadataBsf, VideoEncoder};
@@ -10,6 +11,7 @@ use crate::video_codec::{MetadataBsf, VideoEncoder};
 pub enum OutputOption {
     Format(OutputFormat),
     VideoCodec(VideoEncoder),
+    VideoAspect(Option<FrameSize>),
     VideoMetadata(MetadataBsf),
     VideoBitrate(Option<Kbps>),
     VideoBuffer(Option<Kbps>),
@@ -39,6 +41,10 @@ impl OutputOption {
         match self {
             OutputOption::Format(format) => format.as_arg(output_context),
             OutputOption::VideoCodec(codec) => codec.as_arg(),
+            OutputOption::VideoAspect(Some(size)) => {
+                args!["-aspect:v", format!("{}:{}", size.width, size.height)]
+            }
+            OutputOption::VideoAspect(None) => Vec::new(),
             OutputOption::VideoMetadata(bsf) => bsf.as_arg(),
             OutputOption::VideoBitrate(Some(bitrate_kbps)) => {
                 args![

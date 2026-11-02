@@ -996,6 +996,11 @@
           "$ref": "#/$defs/StreamMode",
           "default": "transcode"
         },
+        "preserve_source_aspect": {
+          "description": "Preserve each transcoded item's display aspect ratio without baked-in bars, while\nkeeping the configured encoded width and height. Overrides `scaling_mode`; copied\nvideo and channels without an output size are unchanged. Requires a supporting fork\nworker and a player that honors aspect changes at program boundaries. Default false.",
+          "type": "boolean",
+          "default": false
+        },
         "scaling_mode": {
           "description": "How a source with a different aspect ratio fits `width` and `height`.",
           "$ref": "#/$defs/ScalingMode",
