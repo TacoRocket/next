@@ -13,8 +13,8 @@ program supplies the compositor's frame clock and EOF; output duration and times
 offset are unchanged. Still mode preserves program audio and decodes/uploads the
 image once before looping it.
 
-This is an SDR, 8-bit VAAPI path. `concat=preserve_ts`, `overlay_vaapi`, libplacebo
-and Vulkan/VAAPI sharing are required. Unsupported hardware, HDR and unreadable
+This is an SDR, 8-bit VAAPI path. The bundled FFmpeg provides `concat=preserve_ts`;
+`overlay_vaapi`, libplacebo and Vulkan/VAAPI sharing are required. Unsupported hardware, HDR and unreadable
 backgrounds leave the ordinary full-screen pipeline in control and record a
 `credit_squeeze_unavailable` degradation. Failures after FFmpeg launches retain
 the worker's existing failure handling; the worker does not retry without squeeze.

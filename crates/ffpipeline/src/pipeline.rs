@@ -629,9 +629,8 @@ impl Pipeline {
                 || !matches!(&final_output_settings.accel, Some(HardwareAccel::Vaapi(vaapi)) if vaapi.can_libplacebo_shader(ffmpeg_info) && vaapi.capabilities.can_overlay)
                 || !ffmpeg_info.has_video_filter(&KnownVideoFilter::OverlayVaapi)
                 || !ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
-                || !ffmpeg_info.has_video_filter_option(&KnownVideoFilter::Concat, "preserve_ts")
             {
-                Some(String::from("Credit squeeze requires 8-bit VAAPI, Vulkan sharing, and timestamp-preserving concat; playing full-screen."))
+                Some(String::from("Credit squeeze requires 8-bit VAAPI and Vulkan sharing; playing full-screen."))
             } else if let Ok(background) = &request.background {
                 match input_settings.select_graphics_stream(background) {
                     None => Some(String::from("Credit squeeze background has no video stream; playing full-screen.")),
@@ -2406,15 +2405,8 @@ mod tests {
         info.hwaccels
             .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
         info.video_filters.extend(
-            [
-                KnownVideoFilter::ScaleVaapi,
-                KnownVideoFilter::OverlayVaapi,
-                KnownVideoFilter::Concat,
-            ]
-            .map(|f| f.to_string()),
+            [KnownVideoFilter::ScaleVaapi, KnownVideoFilter::OverlayVaapi].map(|f| f.to_string()),
         );
-        info.video_filter_options
-            .insert("concat".to_owned(), ["preserve_ts".to_owned()].into());
         let mut input = multichannel_ac3_input("main.mkv");
         input.playout_offset = Duration::from_secs(elapsed);
         if squeeze {
