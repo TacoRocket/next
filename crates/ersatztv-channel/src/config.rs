@@ -485,33 +485,11 @@ pub struct ScaleOptions {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScaleVaapiOptions {
-    /// FFmpeg VAAPI scaling algorithm. Omitted leaves FFmpeg's existing choice unchanged.
-    #[serde(default)]
-    pub mode: Option<ScaleVaapiMode>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ScaleVaapiMode {
-    /// Let the VAAPI driver choose its default scaling algorithm.
-    Default,
-    /// Prefer the driver's fast scaling algorithm.
-    Fast,
-    /// Prefer the driver's high-quality scaling algorithm.
-    Hq,
-    /// Use nonlinear anamorphic scaling where the driver supports it.
-    NlAnamorphic,
-}
-
-impl ScaleVaapiMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Fast => "fast",
-            Self::Hq => "hq",
-            Self::NlAnamorphic => "nl_anamorphic",
-        }
-    }
+    /// FFmpeg `scale_vaapi` mode, e.g. `default` for the driver's scaler or `hq`.
+    /// Omitted leaves FFmpeg's existing choice unchanged.
+    #[serde(default, deserialize_with = "deserialize_filter_option")]
+    #[schemars(regex(pattern = r"^[a-z0-9_.+-]+$"))]
+    pub mode: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -582,10 +560,7 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
                 flags: value.scale.and_then(|o| o.flags),
             },
             scale_vaapi: ffpipeline::output_settings::ScaleVaapiOptions {
-                mode: value
-                    .scale_vaapi
-                    .and_then(|o| o.mode)
-                    .map(|mode| mode.as_str().to_owned()),
+                mode: value.scale_vaapi.and_then(|o| o.mode),
             },
             tonemap: ffpipeline::output_settings::TonemapOptions {
                 tonemap: value.tonemap.and_then(|o| o.tonemap),
@@ -1156,21 +1131,6 @@ mod tests {
             Err(ChannelError::ChannelConfigFailure(message)) => message,
             other => panic!("expected ChannelConfigFailure, got {:?}", other.map(|_| ())),
         }
-    }
-
-    #[tokio::test]
-    async fn vaapi_scaler_rejects_typos_at_config_load() {
-        for mode in ["default", "fast", "hq", "nl_anamorphic"] {
-            let mut source = base();
-            source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": mode}});
-            let config = load(&[source]).await.unwrap();
-            let options: ffpipeline::output_settings::VideoFilterOptions =
-                config.normalization.video.filters.into();
-            assert_eq!(options.scale_vaapi.mode.as_deref(), Some(mode));
-        }
-        let mut source = base();
-        source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": "defualt"}});
-        assert!(config_error(load(&[source]).await).contains("defualt"));
     }
 
     #[tokio::test]

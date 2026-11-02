@@ -13,8 +13,8 @@ program supplies the compositor's frame clock and EOF; output duration and times
 offset are unchanged. Still mode preserves program audio and decodes/uploads the
 image once before looping it.
 
-This is an SDR, 8-bit VAAPI path. `concat=preserve_ts`, `overlay_vaapi`, libplacebo
-and Vulkan/VAAPI sharing are required. Unsupported hardware, HDR and unreadable
+This is an SDR, 8-bit VAAPI path. The bundled FFmpeg provides `concat=preserve_ts`;
+`overlay_vaapi`, libplacebo and Vulkan/VAAPI sharing are required. Unsupported hardware, HDR and unreadable
 backgrounds leave the ordinary full-screen pipeline in control and record a
 `credit_squeeze_unavailable` degradation. Failures after FFmpeg launches retain
 the worker's existing failure handling; the worker does not retry without squeeze.
@@ -117,9 +117,7 @@ in use. The conversion preserves alpha, requested dimensions and placement.
 `normalization.video.filters.scale_vaapi.mode` into the video and bitmap-subtitle
 VAAPI scalers. For example, `{"scale_vaapi":{"mode":"default"}}` in
 `normalization.video.filters` asks the driver to choose its default scaler.
-Supported values are `default`, `fast`, `hq`, and `nl_anamorphic`; unknown values
-are rejected when the channel configuration loads. Omitting the mode preserves
-the existing FFmpeg command. Software fallback,
+Omitting the mode preserves the existing FFmpeg command. Software fallback,
 format-only conversions and other hardware backends are unchanged. Custom shader
 pre-scaling retains its separate `custom_shader_options.input_scale_mode` setting.
 This additive field keeps channel URI 0.1.3 and requires a fork worker containing
