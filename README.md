@@ -88,8 +88,7 @@ BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
 Frames must already be on VAAPI in P010 format; other surface/format paths keep
 the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
 the filter is absent, or the input/output is outside that scope, the existing
-mapping path remains in use. A requested but unavailable filter logs one warning
-at worker startup. This option converts HDR to SDR; it does not disable
+mapping path remains in use. This option converts HDR to SDR; it does not disable
 tone mapping or preserve HDR.
 
 The fixed 1000-nit Hable curve can render highlights and brightness differently
