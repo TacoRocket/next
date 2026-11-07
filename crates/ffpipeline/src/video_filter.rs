@@ -12,7 +12,9 @@ use crate::input::{PeriodicClock, PeriodicTiming, WatermarkTiming};
 use crate::output_settings::{
     BwdifOptions, CustomShader, ScalingMode, W3fdifOptions, YadifOptions,
 };
-use crate::pipeline::{EnvironmentVariable, FrameState, FrameSurface, HdrFormat, PixelFormat};
+use crate::pipeline::{
+    EnvironmentVariable, FrameState, FrameSurface, HdrFormat, PixelFormat, Sampling,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct SoftwareDeinterlaceOptions {
@@ -60,6 +62,7 @@ pub enum VideoFilter {
     Loop(LoopFilter),
     Fps(FpsFilter),
     Format(FormatFilter),
+    NormalizeChroma(NormalizeChromaFilter),
     ToneMap(ToneMapFilter),
     Deinterlace(DeinterlaceFilter),
     Transpose(TransposeFilter),
@@ -164,6 +167,21 @@ pub struct HwUploadFilter {
     pub source_format: PixelFormat,
 }
 
+impl HwUploadFilter {
+    fn target_pixel_format(surface: &FrameSurface, pixel_format: &PixelFormat) -> PixelFormat {
+        match (&surface, pixel_format.bit_depth(), pixel_format.has_alpha()) {
+            (_, 10.., _) => PixelFormat::P010,
+            (FrameSurface::Cuda, 8, true) => PixelFormat::Yuva420p,
+            (FrameSurface::Vaapi, 8, true) if *pixel_format == PixelFormat::Rgba => {
+                PixelFormat::Rgba
+            }
+            (FrameSurface::Vaapi, 8, true) => PixelFormat::Bgra,
+            (FrameSurface::Qsv, 8, true) => PixelFormat::Bgra,
+            _ => PixelFormat::Nv12,
+        }
+    }
+}
+
 impl VideoFilterOp for HwUploadFilter {
     fn evaluate(&self, _state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
         None
@@ -171,14 +189,7 @@ impl VideoFilterOp for HwUploadFilter {
 
     fn apply_to(&self, state: &mut FrameState) {
         state.surface = self.target_surface;
-        state.pixel_format = match &state.pixel_format {
-            PixelFormat::Yuv420p10le => PixelFormat::P010le,
-            PixelFormat::Yuv420p | PixelFormat::Unknown => PixelFormat::Nv12,
-            PixelFormat::Bgra | PixelFormat::Rgba if state.surface == FrameSurface::Cuda => {
-                PixelFormat::Yuva420p
-            }
-            other => *other,
-        }
+        state.pixel_format = Self::target_pixel_format(&state.surface, &state.pixel_format);
     }
 
     fn required_surface(&self) -> Option<FrameSurface> {
@@ -186,20 +197,7 @@ impl VideoFilterOp for HwUploadFilter {
     }
 
     fn as_arg(&self) -> Option<String> {
-        let target_format = match (
-            &self.target_surface,
-            self.source_format.bit_depth(),
-            self.source_format.has_alpha(),
-        ) {
-            (_, 10, _) => PixelFormat::P010le,
-            (FrameSurface::Cuda, 8, true) => PixelFormat::Yuva420p,
-            (FrameSurface::Vaapi, 8, true) if self.source_format == PixelFormat::Rgba => {
-                PixelFormat::Rgba
-            }
-            (FrameSurface::Vaapi, 8, true) => PixelFormat::Bgra,
-            (FrameSurface::Qsv, 8, true) => PixelFormat::Bgra,
-            _ => PixelFormat::Nv12,
-        };
+        let target_format = Self::target_pixel_format(&self.target_surface, &self.source_format);
 
         let format_filter = if self.source_format == target_format {
             String::new()
@@ -367,17 +365,6 @@ pub struct LoopFilter {
     pub loops: Option<u32>,
 }
 
-impl LoopFilter {
-    /// Enough frames to cover `duration` at `frame_rate`.
-    pub fn bounded(is_still_image: bool, duration: Duration, frame_rate: &FrameRate) -> Self {
-        let frames = (duration.as_secs_f64() * frame_rate.parsed_frame_rate).ceil();
-        LoopFilter {
-            is_still_image,
-            loops: Some(frames.min(i32::MAX as f64) as u32),
-        }
-    }
-}
-
 impl VideoFilterOp for LoopFilter {
     fn evaluate(&self, _state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
         if self.is_still_image {
@@ -453,6 +440,48 @@ impl VideoFilterOp for FormatFilter {
 
     fn as_arg(&self) -> Option<String> {
         Some(format!("format={}", self.format.as_arg()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NormalizeChromaFilter;
+
+impl VideoFilterOp for NormalizeChromaFilter {
+    fn evaluate(&self, state: &FrameState, _ffmpeg_info: &FfmpegInfo) -> Option<VideoFilter> {
+        match (
+            state.pixel_format.sampling(),
+            state.pixel_format.bit_depth(),
+        ) {
+            (Sampling::Yuv420, 12 | 16) => Some(
+                FormatFilter {
+                    format: PixelFormat::Yuv420p10le,
+                }
+                .into(),
+            ),
+            (Sampling::Yuv420 | Sampling::Rgb, _) => None,
+            (Sampling::Yuv444 | Sampling::Yuv422, 8) => Some(
+                FormatFilter {
+                    format: PixelFormat::Yuv420p,
+                }
+                .into(),
+            ),
+            (Sampling::Yuv444 | Sampling::Yuv422, _) => Some(
+                FormatFilter {
+                    format: PixelFormat::Yuv420p10le,
+                }
+                .into(),
+            ),
+        }
+    }
+
+    fn apply_to(&self, _state: &mut FrameState) {}
+
+    fn required_surface(&self) -> Option<FrameSurface> {
+        None
+    }
+
+    fn as_arg(&self) -> Option<String> {
+        None
     }
 }
 
@@ -536,10 +565,7 @@ impl VideoFilterOp for DeinterlaceFilter {
 
     fn apply_to(&self, state: &mut FrameState) {
         state.is_interlaced = false;
-        state.pixel_format = match state.pixel_format.bit_depth() {
-            10 => PixelFormat::Yuv420p10le,
-            _ => PixelFormat::Yuv420p,
-        }
+        state.pixel_format = state.pixel_format.planar();
     }
 
     fn required_surface(&self) -> Option<FrameSurface> {
@@ -1414,7 +1440,7 @@ mod tests {
             sample_aspect_ratio: None,
             display_aspect_ratio: None,
             surface: FrameSurface::Vaapi,
-            pixel_format: PixelFormat::P010le,
+            pixel_format: PixelFormat::P010,
             color: FrameColor::default(),
             hdr_format: HdrFormat::Pq,
             rotation: None,
@@ -1431,7 +1457,7 @@ mod tests {
         filter.apply_to(&mut state);
 
         assert_eq!(state.surface, FrameSurface::OpenCL);
-        assert_eq!(state.pixel_format, PixelFormat::P010le);
+        assert_eq!(state.pixel_format, PixelFormat::P010);
         assert_eq!(state.hdr_format, HdrFormat::Pq);
     }
 

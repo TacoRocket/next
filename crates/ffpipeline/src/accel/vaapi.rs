@@ -223,7 +223,7 @@ impl HwAccel for Vaapi {
                 ..
             }) if self.output_format(format) == HwPixelFormat::Nv12
                 && current_state.surface == FrameSurface::Vaapi
-                && current_state.pixel_format == PixelFormat::P010le
+                && current_state.pixel_format == PixelFormat::P010
                 && ffmpeg_info.has_video_filter(&KnownVideoFilter::TonemapVaapiLut) =>
             {
                 TonemapVaapiLut.into()
@@ -244,10 +244,10 @@ impl HwAccel for Vaapi {
             }) => {
                 let tonemap_output_format = self.output_format(format);
                 let can_vaapi_tonemap = match (&current_state.pixel_format, tonemap_output_format) {
-                    (fmt @ &PixelFormat::P010le, HwPixelFormat::P010le) => {
+                    (fmt @ &PixelFormat::P010, HwPixelFormat::P010) => {
                         self.capabilities.can_hdr_to_hdr_tonemap(fmt)
                     }
-                    (fmt @ &PixelFormat::P010le, HwPixelFormat::Nv12) => {
+                    (fmt @ &PixelFormat::P010, HwPixelFormat::Nv12) => {
                         self.capabilities.can_hdr_to_sdr_tonemap(fmt)
                     }
                     _ => false,
@@ -311,9 +311,7 @@ impl HwAccel for Vaapi {
     }
 
     fn can_decode(&self, codec: &str, profile: &str, pixel_format: &PixelFormat) -> bool {
-        let result = self
-            .capabilities
-            .can_decode(codec, profile, pixel_format.bit_depth());
+        let result = self.capabilities.can_decode(codec, profile, pixel_format);
 
         if !result {
             log::debug!(
@@ -369,7 +367,7 @@ impl HwAccel for Vaapi {
                     codec_name: "h264_vaapi",
                     options,
                     preferred_pixel_format_8bit: Some(PixelFormat::Nv12),
-                    preferred_pixel_format_10bit: Some(PixelFormat::P010le),
+                    preferred_pixel_format_10bit: Some(PixelFormat::P010),
                     preferred_surface: FrameSurface::Vaapi,
                     also_accepts: &[],
                 })
@@ -383,7 +381,7 @@ impl HwAccel for Vaapi {
                     codec_name: "hevc_vaapi",
                     options,
                     preferred_pixel_format_8bit: Some(PixelFormat::Nv12),
-                    preferred_pixel_format_10bit: Some(PixelFormat::P010le),
+                    preferred_pixel_format_10bit: Some(PixelFormat::P010),
                     preferred_surface: FrameSurface::Vaapi,
                     also_accepts: &[],
                 })
@@ -514,7 +512,7 @@ impl HwAccel for Vaapi {
         // the canonical VA surface formats first.
         // it is safe to allow 10 bit here because encoder is already checked,
         // e.g. 10-bit software encoder will never try to upload
-        matches!(pixel_format, PixelFormat::Nv12 | PixelFormat::P010le)
+        matches!(pixel_format, PixelFormat::Nv12 | PixelFormat::P010)
             || self.capabilities.vpp_supports_format(pixel_format)
     }
 
@@ -963,7 +961,7 @@ impl VideoFilterOp for TransposeVaapi {
 
 fn to_canonical(format: PixelFormat) -> PixelFormat {
     match format {
-        PixelFormat::Yuv420p10le => PixelFormat::P010le,
+        PixelFormat::Yuv420p10le => PixelFormat::P010,
         PixelFormat::Yuv420p => PixelFormat::Nv12,
         other => other,
     }

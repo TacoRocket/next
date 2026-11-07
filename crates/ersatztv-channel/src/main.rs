@@ -1,7 +1,6 @@
 mod channel_session;
 mod degradation_report;
 mod dossier;
-mod dynamic_retry;
 mod fallback;
 mod local_proxy;
 mod logging;
@@ -14,6 +13,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use ersatztv_channel::config::ChannelConfig;
+use ersatztv_channel::describe::Describe;
 use ersatztv_channel::error::ChannelError;
 use ersatztv_core::SHUTDOWN_DEADLINE;
 use ersatztv_core::process::{kill_descendants_on_exit, parent_exit, shutdown_signal};
@@ -49,6 +49,16 @@ enum Commands {
         #[arg(long)]
         detached: bool,
     },
+    /// Print what this binary supports as JSON
+    Describe {
+        /// Also probe this machine, optionally with a channel config. Overlays merge in order; `-`
+        /// reads one from stdin
+        #[arg(long, num_args = 0.., value_name = "CONFIG")]
+        probe: Option<Vec<PathBuf>>,
+        /// ffmpeg to probe with, instead of the config's or `ffmpeg` on `PATH`
+        #[arg(long, requires = "probe", value_name = "PATH")]
+        ffmpeg: Option<PathBuf>,
+    },
 }
 
 pub fn main() -> ExitCode {
@@ -58,10 +68,14 @@ pub fn main() -> ExitCode {
     // clap may exit here; nothing is spawned yet
     let args = Args::parse();
 
+    if let Commands::Describe { probe, ffmpeg } = &args.command {
+        return describe(probe.as_deref(), ffmpeg.as_deref());
+    }
+
     logging::init();
     let span = match &args.command {
         Commands::Run { number, .. } => tracing::info_span!("channel", number = %number),
-        Commands::Debug { .. } => tracing::Span::none(),
+        Commands::Debug { .. } | Commands::Describe { .. } => tracing::Span::none(),
     };
     // tasks spawned from here need .in_current_span() to keep the channel number
     let _span = span.enter();
@@ -101,6 +115,53 @@ pub fn main() -> ExitCode {
         }
         Err(err) => {
             log::error!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn describe(probe: Option<&[PathBuf]>, ffmpeg: Option<&Path>) -> ExitCode {
+    let mut describe = Describe::new();
+    if let Some(probe) = probe {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                eprintln!("failed to start runtime: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let probed = runtime.block_on(async {
+            let mut config = ChannelConfig::from_sources_over(
+                ersatztv_channel::runtime_capability::base_config(),
+                probe,
+                &std::env::temp_dir(),
+                "describe",
+            )
+            .await?;
+            if let Some(ffmpeg) = ffmpeg {
+                config.ffmpeg.ffmpeg_path = Some(ffmpeg.to_path_buf());
+            }
+            ersatztv_channel::runtime_capability::probe(&config).await
+        });
+        match probed {
+            Ok(capability) => describe.runtime_capability = Some(capability),
+            Err(err) => {
+                eprintln!("failed to probe: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    match serde_json::to_string_pretty(&describe) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("failed to describe: {err}");
             ExitCode::FAILURE
         }
     }
@@ -170,5 +231,6 @@ async fn run(args: Args) -> Result<(), ChannelError> {
 
             Ok(())
         }
+        Commands::Describe { .. } => unreachable!("handled before the runtime starts"),
     }
 }

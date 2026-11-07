@@ -38,8 +38,14 @@ pub enum Fact {
     RandomAccess,
     /// distinct H.264 SPS levels in stream order
     Levels,
+    /// distinct H.264 SPS profile_idc values in stream order
+    Profiles,
+    /// distinct H.264 SPS matrix_coefficients in stream order
+    Matrices,
     /// whether the audio stream ends after the video stream
     AudioOutlastsVideo,
+    /// whole seconds of video stored ahead of the first audio packet
+    AudioStoredLate,
 }
 
 use Fact::*;
@@ -93,6 +99,14 @@ const FIXTURES: &[Expectation] = &[
         &[(Video, "hevc Main 10 640x480 1:1 yuv420p10le 24/1")],
     ),
     (
+        "1080p_hevc_12.ts",
+        &[(Video, "hevc Rext 1920x1080 1:1 yuv420p12le 24/1")],
+    ),
+    (
+        "1080p_hevc_10_422.ts",
+        &[(Video, "hevc Rext 1920x1080 1:1 yuv422p10le 24/1")],
+    ),
+    (
         "480p_h264_anamorphic.ts",
         &[
             (Video, "h264 High 720x480 32:27 yuv420p 30/1"),
@@ -105,6 +119,15 @@ const FIXTURES: &[Expectation] = &[
             (Video, "h264 High 640x480 1:1 yuv420p 30/1"),
             (Levels, "30 51"),
             (Keyframes, "0 0.521 1.021"),
+        ],
+    ),
+    (
+        "480p_h264_reinit.ts",
+        &[
+            (Video, "h264 Main 640x480 1:1 yuv420p 30/1"),
+            (Profiles, "100 77"),
+            (Levels, "30 40"),
+            (Matrices, "1 6"),
         ],
     ),
     (
@@ -231,6 +254,10 @@ const FIXTURES: &[Expectation] = &[
         &[(Video, "h264 High 1280x720 1:1 yuv420p 50/1")],
     ),
     (
+        "1080p_h264_1fps.mp4",
+        &[(Video, "h264 High 1920x1080 1:1 yuv420p 1/1")],
+    ),
+    (
         "576i_mpeg2.ts",
         &[
             (Video, "mpeg2video Main 720x576 64:45 yuv420p 25/1"),
@@ -343,6 +370,10 @@ const FIXTURES: &[Expectation] = &[
     ("long_gop_h264.mkv", &[LONG_GOP, (RandomAccess, "IDR 5")]),
     ("long_gop_h264.ts", &[LONG_GOP, (RandomAccess, "IDR 5")]),
     (
+        "long_gop_h264_late_audio.mkv",
+        &[LONG_GOP, (RandomAccess, "IDR 5"), (AudioStoredLate, "6")],
+    ),
+    (
         "long_gop_h264_open.ts",
         &[LONG_GOP, (RandomAccess, "IDR 1")],
     ),
@@ -449,6 +480,20 @@ impl Probe<'_> {
             .output()
             .expect("failed to run ffmpeg");
         String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
+    fn sps_values(&self, field: &str) -> String {
+        let needle = format!(" {field} ");
+        let mut values: Vec<String> = Vec::new();
+        for line in self.trace_headers("debug").lines() {
+            if line.contains(&needle) {
+                let value = line.rsplit(' ').next().unwrap_or_default().to_string();
+                if values.last() != Some(&value) {
+                    values.push(value);
+                }
+            }
+        }
+        values.join(" ")
     }
 
     fn stream_end(&self, kind: &str) -> f64 {
@@ -660,24 +705,39 @@ impl Probe<'_> {
                     .collect::<Vec<_>>()
                     .join(", ")
             }
-            Levels => {
-                let mut levels: Vec<String> = Vec::new();
-                for line in self.trace_headers("debug").lines() {
-                    if line.contains(" level_idc ") {
-                        let level = line.rsplit(' ').next().unwrap_or_default().to_string();
-                        if levels.last() != Some(&level) {
-                            levels.push(level);
-                        }
-                    }
-                }
-                levels.join(" ")
-            }
+            Levels => self.sps_values("level_idc"),
+            Profiles => self.sps_values("profile_idc"),
+            Matrices => self.sps_values("matrix_coefficients"),
             AudioOutlastsVideo => {
                 if self.stream_end("audio") > self.stream_end("video") {
                     "yes".into()
                 } else {
                     "no".into()
                 }
+            }
+            AudioStoredLate => {
+                let csv = run(
+                    self.ffprobe,
+                    &[
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "packet=codec_type,pts_time",
+                        "-of",
+                        "csv=p=0",
+                    ],
+                    self.path,
+                );
+                let mut video_pts = 0.0_f64;
+                for line in csv.lines() {
+                    let mut parts = line.split(',');
+                    match (parts.next(), parts.next().and_then(|p| p.parse().ok())) {
+                        (Some("audio"), _) => break,
+                        (Some("video"), Some(pts)) => video_pts = video_pts.max(pts),
+                        _ => {}
+                    }
+                }
+                video_pts.floor().to_string()
             }
         }
     }
@@ -777,7 +837,10 @@ pub fn parse_fact(name: &str) -> Option<Fact> {
         Keyframes,
         RandomAccess,
         Levels,
+        Profiles,
+        Matrices,
         AudioOutlastsVideo,
+        AudioStoredLate,
     ]
     .into_iter()
     .find(|fact| format!("{fact:?}") == name)

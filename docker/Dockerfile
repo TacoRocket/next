@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # keep equal to .github/ffmpeg.json (.github/scripts/ffmpeg-pin.sh check)
-ARG FFMPEG_IMAGE=ghcr.io/ersatztv/ersatztv-ffmpeg:8.1.2-7@sha256:b7d658b7bf4b80726867ca69073927472ff3dab05f5ae0b24fd7793ea16b0332
+ARG FFMPEG_IMAGE=ghcr.io/ersatztv/ersatztv-ffmpeg:8.1.2-8@sha256:702edc9ee685d59a69621ab62121c3a7cbf62d4270fbeac9629ac40e95d6f98c
 
 # Build on BUILDPLATFORM so the compiler does not run under QEMU.
 FROM --platform=$BUILDPLATFORM ubuntu:22.04 AS chef
@@ -49,6 +49,8 @@ RUN . /target-env && cargo chef cook --locked --release --recipe-path recipe.jso
 FROM dependencies AS build
 ARG INFO_VERSION
 ENV ETV_VERSION=${INFO_VERSION}
+# no .git in the context, so build.rs can't read the commit
+ARG ETV_COMMIT
 COPY . .
 RUN . /target-env && cargo build --locked --release && \
     mkdir -p /out && \
