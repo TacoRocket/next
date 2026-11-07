@@ -40,7 +40,7 @@ impl HwAccel for Rkmpp {
     fn can_decode(&self, codec: &str, _profile: &str, pixel_format: &PixelFormat) -> bool {
         codec
             .parse::<VideoFormat>()
-            .is_ok_and(|f| self.capabilities.can_decode(&f, pixel_format.bit_depth()))
+            .is_ok_and(|f| self.capabilities.can_decode(&f, pixel_format))
     }
 
     fn can_encode(&self, format: &EncodeFormat, bit_depth: u8) -> bool {
@@ -160,6 +160,8 @@ impl VideoFilterOp for ScaleRkrga {
         Some(FrameSurface::Rkmpp)
     }
 
+    // upscales on the default RGA3 cores come out shifted about 2 px right and down;
+    // core=rga2_core0 doesn't shift, but RGA2 is what the patch avoids (dma32 and algorithm quirks)
     fn as_arg(&self) -> Option<String> {
         self.size.as_ref().map(|size| {
             format!(

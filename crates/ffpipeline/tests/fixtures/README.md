@@ -51,6 +51,8 @@ and GPAC 26.07, the script gives:
   `1080p_h264_cropped_pgs.mkv`, `480i_h264_motion.ts`, `480i_mpeg2.ts`,
   `480p_h264_anamorphic.ts`, `480p_h264_video_only.mkv`, `480p_h264_10.ts`,
   `720p_h264_10.ts`, `720p_h264_audio_longer.mkv` and `long_gop_h264.mkv`;
+- **same packets, interleave varies:** `long_gop_h264_late_audio.mkv`. Where the audio lands
+  depends on thread timing, by a packet or two between runs;
 - **same properties, different encode:** everything else. Those files came from other
   x264/x265 builds (the encoder settings are in their SEI), so the bytes differ but the
   source, settings and probed properties match.
@@ -73,8 +75,11 @@ a mono 440 Hz tone. 10-bit sources are `testsrc` at 24 fps with silent stereo.
 | `1080p_h264.ts`, `720p_h264.ts`, `480p_h264.ts` | Baseline progressive H.264 at each output size. 1080p is coded at 1088 lines, so overlays that leak the padding rows fail the height check | `pipeline`, `watermark`, `crop`, copy tests and most others |
 | `1080p_h264_10.ts`, `720p_h264_10.ts`, `480p_h264_10.ts` | H.264 High 10, which most hardware decoders can't decode | `pipeline` |
 | `1080p_hevc_10.ts`, `720p_hevc_10.ts`, `480p_hevc_10.ts` | HEVC Main 10 SDR (no colour tags) | `pipeline`, `pad_color`, `watermark` |
+| `1080p_hevc_12.ts` | HEVC Rext 4:2:0 12-bit SDR (no colour tags), like `1080p_hevc_10.ts`. Support is per GPU generation, and ffmpeg's VideoToolbox hwaccel doesn't offer it at all, so accels must not treat it as 8-bit or Main 10 | `pipeline` |
+| `1080p_hevc_10_422.ts` | HEVC Rext 4:2:2 10-bit SDR (no colour tags), like `1080p_hevc_10.ts`. Decoders that take it keep 4:2:2 on the device (VideoToolbox `p210`), so downloads can't assume `nv12` or `p010le` | `pipeline` |
 | `480p_h264_anamorphic.ts` | 720x480 with SAR 32:27 (16:9 display), progressive | `pipeline`, `crop`, `stretch_anamorphic_same_size`, `watermark*` |
 | `480p_h264_sps_change.ts` | The SPS changes mid-stream (level 3.0 to 5.1) without a size or format change. Two TS files joined, so timestamps are irregular and `r_frame_rate` probes as 240 | `pipeline`, `watermark` |
+| `480p_h264_reinit.ts` | At 0.5 s the SPS changes profile (High to Main), level (3.0 to 4.0) and matrix (bt709 to smpte170m) without a size or format change, so ffmpeg rebuilds the filtergraph on every decoder: QSV reinitializes on the profile and level, the others re-tag frames with the new colour. `r_frame_rate` probes as 240, like `480p_h264_sps_change.ts` | `watermark_graph_rebuild` |
 | `480p_h264_a53cc.ts` | ATSC A53 caption SEI on every frame. The cc_data is padding only (no caption text), written by `generate/insert_a53cc.py`. 1 kHz tone, 800 kb/s, no B-frames | `pipeline` |
 | `480p_h264_ac3_51.ts` | AC-3 5.1(side) with one tone per channel: FL 250 Hz, FR 500, FC 1000, LFE 60, SL 2000, SR 4000, so a downmix or layout change shows up as a tone in the wrong channel | `surround_audio` |
 | `480p_h264_eac3_51.mkv`, `_dts_51.mkv`, `_truehd_51.mkv` | The same six tones as E-AC-3, DTS and TrueHD 5.1(side). DTS is core only (no DTS-HD MA) and TrueHD has no Atmos: ffmpeg's encoders for both are experimental. Video is CRF 35 | `source_audio_codec` |
@@ -94,6 +99,7 @@ a mono 440 Hz tone. 10-bit sources are `testsrc` at 24 fps with silent stereo.
 | `1080p_vp9.webm`, `1080p_vp9_10.webm` | VP9 profile 0 (`testsrc2`, 30 fps) and profile 2 (10-bit `testsrc`, 24 fps, no colour tags), Opus mono | `source_video_codec` |
 | `1080p_av1.mkv` | 8-bit AV1 SDR (SVT-AV1) | `source_video_codec` |
 | `1080p_h264_23976.mkv`, `720p_h264_50.ts` | Film (23.976) and 50p broadcast rates | `source_format`, `custom_frame_rate` |
+| `1080p_h264_1fps.mp4` | 1 fps slideshow-style source, 4 s. The 2 s keyframe interval becomes a 2-frame GOP, which encoders whose presets default to B-frames (nvenc) reject | `source_format_1fps` |
 | `576i_mpeg2.ts` | PAL DVD: 720x576 SAR 64:45 (16:9), interlaced (TFF) 25 fps MPEG-2 with B-frames, MP2 stereo. `testsrc` | `source_format`, `custom_frame_rate` |
 | `1080p_h264_1916x796.mkv` | A cropped scope encode: neither dimension is a multiple of 8 | `source_format` |
 | `480p_h264_sar_10x11.ts` | 4:3 NTSC with the ITU SAR 10:11, so the display width (654.5) isn't a whole number | `source_format` |
@@ -108,7 +114,8 @@ a mono 440 Hz tone. 10-bit sources are `testsrc` at 24 fps with silent stereo.
 | `1080p_hevc_10_dv5.mp4` | Dolby Vision profile 5 (IPT-C2, full range, no HDR10 fallback) | `tonemap_dv`, `copy_dv5` |
 | `1080p_hevc_10_dv7.mp4` | Dolby Vision profile 7: HDR10 base layer plus a 960x540 enhancement layer carrying the RPU. dovi_tool reports the RPU itself as profile 8 | `tonemap_dv` |
 | `1080p_hevc_10_dv81.mp4`, `_dv82.mp4`, `_dv84.mp4` | Dolby Vision 8.1 (HDR10), 8.2 (BT.709 SDR) and 8.4 (HLG) base layers | `tonemap_dv` |
-| `long_gop_h264.mp4`, `.mkv`, `.ts` | 24 s, 256x144, one IDR every 150 frames (5 s), longer than an HLS segment. Same stream in three containers | `copy_seek`, `copy_input_start` |
+| `long_gop_h264.mp4`, `.mkv`, `.ts` | 24 s, 256x144, one IDR every 150 frames (5 s), longer than an HLS segment. Same stream in three containers | `copy_seek`, `copy_input_start`, `past_shortest_buffer` |
+| `long_gop_h264_late_audio.mkv` | The `.mkv` above with each audio packet stored ~6 s after the video of the same time, like some ASF (WMV). On QSV runtimes before 2.9, `-shortest` holds video surfaces waiting for audio that a shared demuxer hasn't read yet, so one input fails within frames; a second input for audio needs ffmpeg to schedule the sync queue by the stream it waits on (ETV-ffmpeg 0031) | `past_shortest_buffer` |
 | `long_gop_h264_open.ts`, `long_gop_hevc_open.ts` | As above with open GOPs: only the first keyframe is an IDR; later ones are recovery-point I frames (H.264) or CRAs (HEVC) | `copy_seek`, `copy_input_start` |
 | `1080p_h264_cropped_pgs.mkv` | 8 s, 1920x1040 video with a 1920x1080 PGS track that starts at 6 s, past ffprobe's 5 s window, so probing can't find the subtitle size (#335). x264 veryslow, ref 16, level 5.1 | `image_subtitle_unknown_size` |
 | `subtitle_pgs.sup` | PGS: one opaque white box from 0 to 10 s, written by `generate/make_pgs.py` | `copy_image_subtitle`, source for the cropped PGS fixture |

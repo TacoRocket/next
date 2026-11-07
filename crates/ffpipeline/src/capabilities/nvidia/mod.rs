@@ -2,7 +2,13 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::pipeline::{PixelFormat, VideoFormat};
+use crate::pipeline::{PixelFormat, Sampling, VideoFormat};
+
+/// `false` where the backend below is a stub.
+pub const HAS_PROBE: bool = cfg!(all(
+    any(target_os = "linux", target_os = "windows"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+));
 
 #[cfg(all(
     any(target_os = "linux", target_os = "windows"),
@@ -20,6 +26,7 @@ pub(crate) mod stub;
 pub struct EncoderCapability {
     pub bit_depths: Vec<u8>,
     pub b_frame_ref_mode: bool,
+    pub max_b_frames: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,10 +37,14 @@ pub struct NvidiaCapabilities {
 }
 
 impl NvidiaCapabilities {
-    pub fn can_decode(&self, format: &VideoFormat, bit_depth: u8) -> bool {
+    pub fn can_decode(&self, format: &VideoFormat, pixel_format: &PixelFormat) -> bool {
+        if pixel_format.sampling() != Sampling::Yuv420 {
+            return false;
+        }
+
         self.supported_decoders
             .get(format)
-            .is_some_and(|bit_depths| bit_depths.contains(&bit_depth))
+            .is_some_and(|bit_depths| bit_depths.contains(&pixel_format.bit_depth()))
     }
 
     pub fn can_encode(&self, format: &VideoFormat, bit_depth: u8) -> bool {
@@ -52,8 +63,14 @@ impl NvidiaCapabilities {
             .is_some_and(|cap| cap.b_frame_ref_mode)
     }
 
+    pub fn max_b_frames(&self, format: &VideoFormat) -> u32 {
+        self.supported_encoders
+            .get(format)
+            .map_or(0, |cap| cap.max_b_frames)
+    }
+
     pub fn vpp_supports_format(&self, pixel_format: &PixelFormat) -> bool {
-        matches!(pixel_format, PixelFormat::Nv12 | PixelFormat::P010le)
+        matches!(pixel_format, PixelFormat::Nv12 | PixelFormat::P010)
     }
 
     pub fn device_uuid(&self) -> Option<[u8; 16]> {

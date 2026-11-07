@@ -28,6 +28,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Scale BGRA image subtitles on VAAPI with default scaling, avoiding software canvas enlargement before upload; retain software scaling for custom flags or unsupported hardware.
 - Limit repeated PGS subtitle images to the video frame rate before scaling, avoiding stalled burn-in startup on high-resolution video.
 
+## [0.2.5] - 2026-11-06
+### Added
+- `ersatztv-channel describe` prints a JSON document describing the binary; its schema is `schema/describe.json` and it includes:
+  - Version and commit
+  - Playout and channel config schema versions it accepts
+  - Output file names, segment and keyframe lengths
+  - Video/audio formats, accels and subtitle modes the channel config accepts
+  - Headers sent to dynamic source resolvers
+- `ersatztv-channel describe --probe` adds what this machine can do: the ffmpeg version and hwaccels, and for each accel on this platform whether it is available and which codecs and pixel formats it decodes and encodes in hardware
+  - VAAPI is tried on every render node with each driver, to show which combinations work
+  - Takes optional channel configs (partial is fine) to mark the configured accel, and `--ffmpeg <path>` to choose the ffmpeg build
+- Dynamic source requests send `x-etv-playout-schema`, the newest playout schema version the channel accepts (playout schema `0.0.8`)
+
+### Changed
+- Require ErsatzTV-ffmpeg `8.1.2-8`
+- A dynamic source response with an invalid `probe_hint` plays without its hints, as a playout file item does, instead of showing the fallback
+
+### Fixed
+- Vulkan: fix hardware decode being chosen for formats the driver can't decode, such as H.264 10-bit on Intel GPUs on Windows
+  - Vulkan support is now checked the way ffmpeg checks it, including whether the driver has an image format for it
+- Vulkan: never select a CPU (llvmpipe) Vulkan device
+- Channel config errors name the field, e.g. `normalization: missing field audio` instead of `missing field audio`
+- Fix QSV streams failing about 10 s in with `Can't allocate a surface` or `Failed to query an output frame` on pre-Tiger Lake Intel GPUs (regression in 0.2.4)
+- Fix NVENC failing to start (`Gop Length should be greater than number of B frames + 1`) on very low frame rate sources, such as 1 fps slideshows
+- VAAPI: fix `tonemap_opencl` and `pad_opencl` never being used on Intel GPUs when only the OpenCL runtime (`libOpenCL.so.1`) is installed, such as in the ErsatzTV-ffmpeg base docker image
+- Fix still-image watermarks disappearing partway through an item, or (QSV) the item ending early
+  - This happened when the source's video parameters change mid-stream, such as spliced or smart-cut files
+- Fix QSV, VAAPI and CUDA items failing when the source's color tags change mid-stream
+- Fix 4:2:2, 4:4:4 and 12-bit sources (such as ProRes, or HEVC/H.264 from cameras)
+  - Hardware decode is no longer attempted; they are converted to 4:2:0 after deinterlacing and scaling
+- Fix one invalid playout item failing the whole playout file, so the channel showed `failed to load playout JSON file` for every item
+  - An invalid item now shows the fallback (and error card, if `fallback.show_error` is on) for its own time only, naming the item and the invalid field
+  - An item with an invalid `probe_hint` plays without its hints instead, with a warning in the log
+  - An item without a readable `id`, `start` and `finish` is skipped, and its time is treated as a gap
+
+### Known issues
+- VAAPI on Intel Meteor Lake and Arrow Lake with the free `intel-media-va-driver` package (Debian, Ubuntu): channels with a watermark run far below realtime
+  - Install `intel-media-va-driver-non-free`, or set `ffmpeg.disabled_filters` to `["overlay_vaapi"]` in the channel config
+  - The docker image is not affected
+
 ## [0.2.4] - 2026-10-31
 ### Added
 - VAAPI: tonemap with `libplacebo` when a Vulkan device on the same GPU is available
@@ -145,7 +185,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - First versioned release; earlier builds report `0.1.0-<commit>`
 - Release notes list the config versions each build reads and the [ErsatzTV-ffmpeg](https://github.com/ErsatzTV/ErsatzTV-ffmpeg) build it ships with
 
-[Unreleased]: https://github.com/ErsatzTV/next/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/ErsatzTV/next/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/ErsatzTV/next/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/ErsatzTV/next/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/ErsatzTV/next/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ErsatzTV/next/compare/v0.2.1...v0.2.2

@@ -34,6 +34,12 @@ cargo run --bin ersatztv-channel -- run <path/to/channel.json> --output-folder <
 # Debug channel config and FFmpeg capabilities
 cargo run --bin ersatztv-channel -- debug <path/to/channel.json>
 
+# Print the channel binary's contract and supported config values as JSON (schema/describe.json)
+cargo run --bin ersatztv-channel -- describe
+
+# Also probe this machine's accels (fills runtime_capability); configs are optional and may be partial
+cargo run --bin ersatztv-channel -- describe --probe [<path/to/channel.json> ...] [--ffmpeg <path/to/ffmpeg>]
+
 # Probe hardware acceleration capabilities directly (one subcommand per accel)
 cargo run --bin probe_capabilities -- <amf|cuda|qsv|rkmpp|vaapi|video-toolbox|vulkan|opencl>
 
@@ -46,6 +52,7 @@ cargo run --bin ersatztv-playout-generator -- --content-folder <dir> --lineup <p
 # Regenerate JSON schemas from Rust types (see "Generated vs hand-maintained files")
 cargo run --bin gen-channel-config-schema > schema/channel_config.json
 cargo run --bin gen-lineup-config-schema > schema/lineup_config.json
+cargo run --bin gen-describe-schema > schema/describe.json
 
 # Lint (CI also sets RUSTFLAGS=-Dwarnings, so warnings fail the build)
 RUSTFLAGS=-Dwarnings cargo clippy --locked --workspace --all-features --all-targets -- -D clippy::all
@@ -167,6 +174,7 @@ channels.
 |---|---|---|
 | `schema/channel_config.json` | `crates/ersatztv-channel/src/config.rs` (schemars) | `cargo run --bin gen-channel-config-schema > schema/channel_config.json` |
 | `schema/lineup_config.json` | `crates/ersatztv/src/config.rs` (schemars) | `cargo run --bin gen-lineup-config-schema > schema/lineup_config.json` |
+| `schema/describe.json` | `crates/ersatztv-channel/src/describe.rs` (schemars) | `cargo run --bin gen-describe-schema > schema/describe.json`; `tests/describe.rs` fails when it is stale |
 | `schema/playout.json` | hand-maintained | edit by hand alongside `crates/ersatztv-playout/src/playout.rs` |
 | `crates/ersatztv/src/templates/channel.json` | symlink to `examples/channel.json` | edit the example; `sed -i` on the link replaces it with a copy |
 | `examples/channel.json`, `examples/lineup.json`, `examples/playout/playout.json` | hand-maintained | update when the corresponding model changes; each must carry the current schema version and validate against its schema. `example_loads_at_current_version` tests load each one and check the version |
@@ -239,6 +247,8 @@ Everything in the previous checklist, plus:
 
 1. New `crates/lib<accel>-sys` crate; add to workspace `Cargo.toml` and `ffpipeline/Cargo.toml`.
 2. `crates/ffpipeline/src/capabilities/mod.rs` and `src/accel/mod.rs` — register the module.
+   The capabilities module's `HAS_PROBE` uses the same `cfg` as its real backend; `describe --probe` lists the accel
+   only where it is `true` (`crates/ersatztv-channel/src/runtime_capability.rs`).
 3. `crates/ffpipeline/src/hw_accel.rs` — `HardwareAccel` enum variant.
 4. `crates/ffpipeline/src/ffmpeg_info.rs` — `KnownHardwareAccel` / `KnownDecoders` / `KnownVideoFilter` entries for
    the ffmpeg hwaccel, decoder and filter names to probe for.
@@ -320,6 +330,23 @@ maintainer handles the legacy side. Your job is to call it out explicitly in the
 | Lineup config `SUPPORTED_SCHEMA` bump | none in legacy (it never writes `lineup.json`); `ErsatzTV.org/docs-next/` for standalone users |
 | `channel.json` field | `ErsatzTV.Core/Next/Config/ChannelConfig.cs` (regenerated from `schema/channel_config.json`; see below) |
 | User-visible config or behavior | `ErsatzTV.org/docs-next/` |
+| `describe` output (`describe.rs`) | none in legacy yet; `ErsatzTV.org/docs-next/`. Adding a field is compatible; removing, renaming or changing one bumps `DESCRIBE_VERSION` and is `### Breaking` |
+| Dynamic source callback (`crates/ersatztv-channel/src/dynamic.rs`) | legacy's fallback filler resolver (`GetFallbackPlayoutJson` in `ErsatzTV/Controllers/InternalController.cs`) and every other resolver, e.g. Tunarr's. Bump the playout schema per "Dynamic source callback" below |
+
+### Dynamic source callback
+
+The request a channel sends to resolve a `dynamic` source and the response it accepts are part of the playout
+schema: they are documented in the `DynamicSource` description in `schema/playout.json` and pinned by
+`crates/ersatztv-channel/tests/dynamic_contract.rs`. There is no separate callback version; resolvers read the
+channel's version from the `x-etv-playout-schema` header or from `describe`. When that test fails, update the
+description and bump the playout schema:
+
+- **breaking**: removing or renaming a header, changing a header value's format or meaning, refusing a response that
+  loads today, or changing the `start`/`finish` rewrite, the retry rules or how the returned `id` is used;
+- **compatible**: a new header, or accepting a response that is refused today.
+
+Changing the playout model changes the response too: `deny_unknown_fields` on `PlayoutItem` would be breaking for
+resolvers as well as for playout files.
 
 ### Regenerating legacy's C# models
 

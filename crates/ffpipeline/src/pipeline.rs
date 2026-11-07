@@ -29,6 +29,7 @@ use crate::input::{
     CanvasLayout, FfmpegInputArgs, FfmpegInputRequestContext, GraphicsInput, GraphicsKind,
     InputSettings, InputSource, ProbedInput,
 };
+use crate::output_format::gop_frames;
 use crate::output_option::OutputOption;
 use crate::output_settings::{
     OutputSettings, ScalingMode, SubtitleMode, ToneMappingMode, VideoFilterOptions, YadifOptions,
@@ -41,10 +42,10 @@ use crate::video_codec::{MetadataBsf, VideoCodec, VideoEncoder};
 use crate::video_decoder::VideoDecoder;
 use crate::video_filter::{
     ClipFilter, ColorChannelMixerFilter, CropFilter, DeinterlaceFilter, Dv5WorkaroundFilter,
-    EnsureAlphaFilter, FadeFilter, FormatFilter, FpsFilter, LoopFilter, PadFilter, ScaleFilter,
-    SetSarFilter, ShaderFilter, SoftwareDeinterlaceFilter, SoftwareDeinterlaceOptions,
-    SubtitleImageScaleFilter, SubtitlesFilter, ToneMapFilter, TransposeDir, TransposeFilter,
-    VideoFilter,
+    EnsureAlphaFilter, FadeFilter, FormatFilter, FpsFilter, LoopFilter, NormalizeChromaFilter,
+    PadFilter, ScaleFilter, SetSarFilter, ShaderFilter, SoftwareDeinterlaceFilter,
+    SoftwareDeinterlaceOptions, SubtitleImageScaleFilter, SubtitlesFilter, ToneMapFilter,
+    TransposeDir, TransposeFilter, VideoFilter,
 };
 
 pub const KEYFRAME_INTERVAL_SECONDS: u32 = 2;
@@ -182,22 +183,61 @@ impl FrameSurface {
 pub type SurfaceSet = std::collections::HashSet<FrameSurface>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sampling {
+    Yuv420,
+    Yuv422,
+    Yuv444,
+    Rgb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     Bgra,
     Rgba,
     Yuv420p,
     Yuv420p10le,
+    Yuv420p12le,
+    Yuv420p16le,
+    Yuv422p,
+    Yuv422p10le,
+    Yuv422p12le,
+    Yuv422p16le,
+    Yuv444p,
+    Yuv444p10le,
+    Yuv444p12le,
+    Yuv444p16le,
     Yuva420p,
     Yuva420p10le,
+    Yuva420p16le,
+    Yuva422p,
+    Yuva422p10le,
+    Yuva422p12le,
+    Yuva422p16le,
+    Yuva444p,
+    Yuva444p10le,
+    Yuva444p12le,
+    Yuva444p16le,
+    Yuvj420p,
+    Yuvj422p,
+    Yuvj444p,
     Nv12,
     Nv15,
-    P010le,
+    Nv16,
+    Nv20,
+    P010,
+    P012,
     P016,
+    P210,
+    P212,
+    P216,
+    P410,
+    P412,
+    P416,
     /// never a conversion target
     Unknown,
 }
 
-gen_subset!(HwPixelFormat, PixelFormat, Nv12, Nv15, P010le);
+gen_subset!(HwPixelFormat, PixelFormat, Nv12, Nv15, P010);
 
 impl PixelFormat {
     pub fn parse(pix_fmt: &str) -> PixelFormat {
@@ -206,11 +246,43 @@ impl PixelFormat {
             "rgba" => PixelFormat::Rgba,
             "yuv420p" => PixelFormat::Yuv420p,
             "yuv420p10le" => PixelFormat::Yuv420p10le,
+            "yuv420p12le" => PixelFormat::Yuv420p12le,
+            "yuv420p16le" => PixelFormat::Yuv420p16le,
+            "yuv422p" => PixelFormat::Yuv422p,
+            "yuv422p10le" => PixelFormat::Yuv422p10le,
+            "yuv422p12le" => PixelFormat::Yuv422p12le,
+            "yuv422p16le" => PixelFormat::Yuv422p16le,
+            "yuv444p" => PixelFormat::Yuv444p,
+            "yuv444p10le" => PixelFormat::Yuv444p10le,
+            "yuv444p12le" => PixelFormat::Yuv444p12le,
+            "yuv444p16le" => PixelFormat::Yuv444p16le,
             "yuva420p" => PixelFormat::Yuva420p,
             "yuva420p10le" => PixelFormat::Yuva420p10le,
+            "yuva420p16le" => PixelFormat::Yuva420p16le,
+            "yuva422p" => PixelFormat::Yuva422p,
+            "yuva422p10le" => PixelFormat::Yuva422p10le,
+            "yuva422p12le" => PixelFormat::Yuva422p12le,
+            "yuva422p16le" => PixelFormat::Yuva422p16le,
+            "yuva444p" => PixelFormat::Yuva444p,
+            "yuva444p10le" => PixelFormat::Yuva444p10le,
+            "yuva444p12le" => PixelFormat::Yuva444p12le,
+            "yuva444p16le" => PixelFormat::Yuva444p16le,
+            "yuvj420p" => PixelFormat::Yuvj420p,
+            "yuvj422p" => PixelFormat::Yuvj422p,
+            "yuvj444p" => PixelFormat::Yuvj444p,
             "nv12" => PixelFormat::Nv12,
-            "nv15" => PixelFormat::Nv15,
-            "p010le" => PixelFormat::P010le,
+            "nv15" => PixelFormat::Nv15, // only rockchip
+            "nv16" => PixelFormat::Nv16,
+            "nv20" => PixelFormat::Nv20, // only rockchip
+            "p010" | "p010le" => PixelFormat::P010,
+            "p012" | "p012le" => PixelFormat::P012,
+            "p016" | "p016le" => PixelFormat::P016,
+            "p210" | "p210le" => PixelFormat::P210,
+            "p212" | "p212le" => PixelFormat::P212,
+            "p216" | "p216le" => PixelFormat::P216,
+            "p410" | "p410le" => PixelFormat::P410,
+            "p412" | "p412le" => PixelFormat::P412,
+            "p416" | "p416le" => PixelFormat::P416,
             _ => {
                 log::debug!("unknown pixel format {}", pix_fmt);
                 PixelFormat::Unknown
@@ -218,19 +290,147 @@ impl PixelFormat {
         }
     }
 
-    pub(crate) fn bit_depth(&self) -> u8 {
+    pub fn bit_depth(&self) -> u8 {
         match self {
             PixelFormat::Bgra
             | PixelFormat::Rgba
             | PixelFormat::Yuv420p
+            | PixelFormat::Yuv422p
+            | PixelFormat::Yuv444p
             | PixelFormat::Yuva420p
+            | PixelFormat::Yuva422p
+            | PixelFormat::Yuva444p
+            | PixelFormat::Yuvj420p
+            | PixelFormat::Yuvj422p
+            | PixelFormat::Yuvj444p
             | PixelFormat::Nv12
+            | PixelFormat::Nv16
             | PixelFormat::Unknown => 8,
             PixelFormat::Yuv420p10le
+            | PixelFormat::Yuv422p10le
+            | PixelFormat::Yuv444p10le
             | PixelFormat::Yuva420p10le
-            | PixelFormat::P010le
-            | PixelFormat::Nv15 => 10,
-            PixelFormat::P016 => 16,
+            | PixelFormat::Yuva422p10le
+            | PixelFormat::Yuva444p10le
+            | PixelFormat::P010
+            | PixelFormat::P210
+            | PixelFormat::P410
+            | PixelFormat::Nv15
+            | PixelFormat::Nv20 => 10,
+            PixelFormat::Yuv420p12le
+            | PixelFormat::Yuv422p12le
+            | PixelFormat::Yuv444p12le
+            | PixelFormat::Yuva422p12le
+            | PixelFormat::Yuva444p12le
+            | PixelFormat::P012
+            | PixelFormat::P212
+            | PixelFormat::P412 => 12,
+            PixelFormat::Yuv420p16le
+            | PixelFormat::Yuv422p16le
+            | PixelFormat::Yuv444p16le
+            | PixelFormat::Yuva420p16le
+            | PixelFormat::Yuva422p16le
+            | PixelFormat::Yuva444p16le
+            | PixelFormat::P016
+            | PixelFormat::P216
+            | PixelFormat::P416 => 16,
+        }
+    }
+
+    pub fn sampling(&self) -> Sampling {
+        match self {
+            PixelFormat::Bgra | PixelFormat::Rgba => Sampling::Rgb,
+            PixelFormat::Yuv420p
+            | PixelFormat::Yuv420p10le
+            | PixelFormat::Yuv420p12le
+            | PixelFormat::Yuv420p16le
+            | PixelFormat::Yuva420p
+            | PixelFormat::Yuva420p10le
+            | PixelFormat::Yuva420p16le
+            | PixelFormat::Yuvj420p
+            | PixelFormat::Nv12
+            | PixelFormat::Nv15
+            | PixelFormat::P010
+            | PixelFormat::P012
+            | PixelFormat::P016
+            | PixelFormat::Unknown => Sampling::Yuv420,
+            PixelFormat::Yuv422p
+            | PixelFormat::Yuv422p10le
+            | PixelFormat::Yuv422p12le
+            | PixelFormat::Yuv422p16le
+            | PixelFormat::Yuva422p
+            | PixelFormat::Yuva422p10le
+            | PixelFormat::Yuva422p12le
+            | PixelFormat::Yuva422p16le
+            | PixelFormat::Yuvj422p
+            | PixelFormat::Nv16
+            | PixelFormat::Nv20
+            | PixelFormat::P210
+            | PixelFormat::P212
+            | PixelFormat::P216 => Sampling::Yuv422,
+            PixelFormat::Yuv444p
+            | PixelFormat::Yuv444p10le
+            | PixelFormat::Yuv444p12le
+            | PixelFormat::Yuv444p16le
+            | PixelFormat::Yuva444p
+            | PixelFormat::Yuva444p10le
+            | PixelFormat::Yuva444p12le
+            | PixelFormat::Yuva444p16le
+            | PixelFormat::Yuvj444p
+            | PixelFormat::P410
+            | PixelFormat::P412
+            | PixelFormat::P416 => Sampling::Yuv444,
+        }
+    }
+
+    pub(crate) fn planar(&self) -> PixelFormat {
+        match self {
+            PixelFormat::Nv12 => PixelFormat::Yuv420p,
+            PixelFormat::Nv16 => PixelFormat::Yuv422p,
+            PixelFormat::P010 => PixelFormat::Yuv420p10le,
+            PixelFormat::P012 => PixelFormat::Yuv420p12le,
+            PixelFormat::P016 => PixelFormat::Yuv420p16le,
+            PixelFormat::P210 => PixelFormat::Yuv422p10le,
+            PixelFormat::P212 => PixelFormat::Yuv422p12le,
+            PixelFormat::P216 => PixelFormat::Yuv422p16le,
+            PixelFormat::P410 => PixelFormat::Yuv444p10le,
+            PixelFormat::P412 => PixelFormat::Yuv444p12le,
+            PixelFormat::P416 => PixelFormat::Yuv444p16le,
+
+            // rockchip; not tested
+            PixelFormat::Nv15 => PixelFormat::Yuv420p10le,
+            PixelFormat::Nv20 => PixelFormat::Yuv422p10le,
+
+            PixelFormat::Bgra | PixelFormat::Rgba => PixelFormat::Unknown,
+
+            PixelFormat::Yuv420p => PixelFormat::Yuv420p,
+            PixelFormat::Yuv420p10le => PixelFormat::Yuv420p10le,
+            PixelFormat::Yuv420p12le => PixelFormat::Yuv420p12le,
+            PixelFormat::Yuv420p16le => PixelFormat::Yuv420p16le,
+            PixelFormat::Yuv422p => PixelFormat::Yuv422p,
+            PixelFormat::Yuv422p10le => PixelFormat::Yuv422p10le,
+            PixelFormat::Yuv422p12le => PixelFormat::Yuv422p12le,
+            PixelFormat::Yuv422p16le => PixelFormat::Yuv422p16le,
+            PixelFormat::Yuv444p => PixelFormat::Yuv444p,
+            PixelFormat::Yuv444p10le => PixelFormat::Yuv444p10le,
+            PixelFormat::Yuv444p12le => PixelFormat::Yuv444p12le,
+            PixelFormat::Yuv444p16le => PixelFormat::Yuv444p16le,
+            PixelFormat::Yuva420p => PixelFormat::Yuva420p,
+            PixelFormat::Yuva420p10le => PixelFormat::Yuva420p10le,
+            PixelFormat::Yuva420p16le => PixelFormat::Yuva420p16le,
+            PixelFormat::Yuva422p => PixelFormat::Yuva422p,
+            PixelFormat::Yuva422p10le => PixelFormat::Yuva422p10le,
+            PixelFormat::Yuva422p12le => PixelFormat::Yuva422p12le,
+            PixelFormat::Yuva422p16le => PixelFormat::Yuva422p16le,
+            PixelFormat::Yuva444p => PixelFormat::Yuva444p,
+            PixelFormat::Yuva444p10le => PixelFormat::Yuva444p10le,
+            PixelFormat::Yuva444p12le => PixelFormat::Yuva444p12le,
+            PixelFormat::Yuva444p16le => PixelFormat::Yuva444p16le,
+            PixelFormat::Yuvj420p => PixelFormat::Yuvj420p,
+            PixelFormat::Yuvj422p => PixelFormat::Yuvj422p,
+            PixelFormat::Yuvj444p => PixelFormat::Yuvj444p,
+
+            PixelFormat::Unknown => PixelFormat::Unknown,
         }
     }
 
@@ -241,6 +441,15 @@ impl PixelFormat {
                 | PixelFormat::Rgba
                 | PixelFormat::Yuva420p
                 | PixelFormat::Yuva420p10le
+                | PixelFormat::Yuva420p16le
+                | PixelFormat::Yuva422p
+                | PixelFormat::Yuva422p10le
+                | PixelFormat::Yuva422p12le
+                | PixelFormat::Yuva422p16le
+                | PixelFormat::Yuva444p
+                | PixelFormat::Yuva444p10le
+                | PixelFormat::Yuva444p12le
+                | PixelFormat::Yuva444p16le
         )
     }
 
@@ -250,12 +459,43 @@ impl PixelFormat {
             PixelFormat::Rgba => "rgba",
             PixelFormat::Yuv420p => "yuv420p",
             PixelFormat::Yuv420p10le => "yuv420p10le",
+            PixelFormat::Yuv420p12le => "yuv420p12le",
+            PixelFormat::Yuv420p16le => "yuv420p16le",
+            PixelFormat::Yuv422p => "yuv422p",
+            PixelFormat::Yuv422p10le => "yuv422p10le",
+            PixelFormat::Yuv422p12le => "yuv422p12le",
+            PixelFormat::Yuv422p16le => "yuv422p16le",
+            PixelFormat::Yuv444p => "yuv444p",
+            PixelFormat::Yuv444p10le => "yuv444p10le",
+            PixelFormat::Yuv444p12le => "yuv444p12le",
+            PixelFormat::Yuv444p16le => "yuv444p16le",
             PixelFormat::Yuva420p => "yuva420p",
             PixelFormat::Yuva420p10le => "yuva420p10le",
+            PixelFormat::Yuva420p16le => "yuva420p16le",
+            PixelFormat::Yuva422p => "yuva422p",
+            PixelFormat::Yuva422p10le => "yuva422p10le",
+            PixelFormat::Yuva422p12le => "yuva422p12le",
+            PixelFormat::Yuva422p16le => "yuva422p16le",
+            PixelFormat::Yuva444p => "yuva444p",
+            PixelFormat::Yuva444p10le => "yuva444p10le",
+            PixelFormat::Yuva444p12le => "yuva444p12le",
+            PixelFormat::Yuva444p16le => "yuva444p16le",
+            PixelFormat::Yuvj420p => "yuvj420p",
+            PixelFormat::Yuvj422p => "yuvj422p",
+            PixelFormat::Yuvj444p => "yuvj444p",
             PixelFormat::Nv12 => "nv12",
             PixelFormat::Nv15 => "nv15",
-            PixelFormat::P010le => "p010le",
+            PixelFormat::Nv16 => "nv16",
+            PixelFormat::Nv20 => "nv20",
+            PixelFormat::P010 => "p010",
+            PixelFormat::P012 => "p012",
             PixelFormat::P016 => "p016",
+            PixelFormat::P210 => "p210",
+            PixelFormat::P212 => "p212",
+            PixelFormat::P216 => "p216",
+            PixelFormat::P410 => "p410",
+            PixelFormat::P412 => "p412",
+            PixelFormat::P416 => "p416",
             PixelFormat::Unknown => "unknown",
         }
     }
@@ -489,7 +729,7 @@ impl Pipeline {
         };
 
         // TODO: add target profile to config
-        let video_encoder = match &copy_decisions.video {
+        let mut video_encoder = match &copy_decisions.video {
             Some(CopyDecision::Copy) => VideoEncoder::Copy,
             _ => {
                 let format = video_transcode.format;
@@ -706,15 +946,23 @@ impl Pipeline {
             .frame_rate
             .clone()
             .filter(|_| video_encoder != VideoEncoder::Copy);
+        let frame_rate = output_frame_rate
+            .clone()
+            .unwrap_or_else(|| video_stream.frame_rate.to_owned());
+
+        if let VideoEncoder::Encode(codec) = &mut video_encoder
+            && let Some(accel) = &final_output_settings.accel
+        {
+            let gop_options = accel.encoder_gop_options(codec, gop_frames(&frame_rate));
+            codec.options.extend(gop_options);
+        }
 
         let output_context = OutputContext {
             audio_codec,
             audio_channels: final_output_settings.audio.transcode.channels,
             video_encoder: video_encoder.clone(),
             pts_offset,
-            frame_rate: output_frame_rate
-                .clone()
-                .unwrap_or_else(|| video_stream.frame_rate.to_owned()),
+            frame_rate,
             encoder_target: EncoderTarget {
                 surface: video_encoder.preferred_surface(),
                 pixel_format: video_encoder.preferred_pixel_format(video_transcode.bit_depth),
@@ -853,6 +1101,7 @@ impl Pipeline {
             ),
             PipelineFilter::Video(TransposeFilter::default().into()),
             scale,
+            PipelineFilter::Video(NormalizeChromaFilter.into()),
             PipelineFilter::Video(
                 CropFilter {
                     size: video_transcode.size,
@@ -1192,9 +1441,16 @@ impl Pipeline {
                     args!["-t", format!("{}ms", duration.as_millis())]
                 }
             } else if graphics_stream.is_still_image() {
-                // decode a single frame; the loop filter below repeats it *after* scaling, so
-                // decode and scale happen once instead of once per output frame
-                args!["-framerate", output_context.frame_rate.r_frame_rate.clone()]
+                // loop the input, not in the graph: ffmpeg rebuilds the filtergraph when the main
+                // input's frames change mid-stream, and a rebuilt graph only gets new frames
+                args![
+                    "-loop",
+                    "1",
+                    "-framerate",
+                    output_context.frame_rate.r_frame_rate.clone(),
+                    "-t",
+                    format!("{}ms", duration.as_millis())
+                ]
             } else if graphics_stream.codec == "gif" || graphics_stream.codec == "apng" {
                 args![
                     "-ignore_loop",
@@ -1291,7 +1547,7 @@ impl Pipeline {
 
             let ensure_alpha_filter: VideoFilter = EnsureAlphaFilter {
                 format: match secondary_initial_state.pixel_format.bit_depth() {
-                    10 => PixelFormat::Yuva420p10le,
+                    10.. => PixelFormat::Yuva420p10le,
                     _ => PixelFormat::Bgra,
                 },
             }
@@ -1337,20 +1593,6 @@ impl Pipeline {
                     .into(),
                 ]
             };
-
-            // a still image is decoded as a single frame; only fades need it repeated (they act on
-            // frame timestamps). otherwise the overlay's repeatlast holds it, which keeps the
-            // per-frame format conversion and hwupload out of the chain entirely
-            if !fade_filters.is_empty() {
-                secondary_filters.push(
-                    LoopFilter::bounded(
-                        graphics_stream.is_still_image(),
-                        duration,
-                        &output_context.frame_rate,
-                    )
-                    .into(),
-                );
-            }
 
             secondary_filters.extend(fade_filters.iter().map(|f| f.clone().into()));
 
@@ -1682,13 +1924,24 @@ impl Pipeline {
     }
 
     /// loudnorm delays audio by ~3 s, so -shortest queues video until audio arrives.
-    /// The default 10 s queue uses all surfaces of a fixed qsv pool (64), with or without a canvas.
+    /// With a shared demuxer, that queue uses up a fixed qsv pool (64). With audio on its own
+    /// input, ffmpeg (ETV-ffmpeg 0031) pauses video's demuxer instead.
     fn shortest_needs_small_buffer(&self) -> bool {
         let Some(HardwareAccel::Qsv(qsv)) = &self.accel else {
             return false;
         };
 
-        qsv.capabilities.requires_fixed_pool() && self.has_loudnorm()
+        let audio_own_input = self.inputs.iter().any(|i| {
+            matches!(
+                i,
+                PipelineInput::Audio {
+                    own_input: true,
+                    ..
+                }
+            )
+        });
+
+        qsv.capabilities.requires_fixed_pool() && self.has_loudnorm() && !audio_own_input
     }
 
     fn has_loudnorm(&self) -> bool {
@@ -3738,7 +3991,7 @@ mod tests {
         let downmix = args.iter().position(|a| a == "-downmix").expect("-downmix");
         assert!(inputs[0] < downmix && downmix < inputs[1], "{args:?}");
 
-        assert_eq!(shortest_buf_duration(&args), Some("0.500"), "{args:?}");
+        assert_eq!(shortest_buf_duration(&args), None, "{args:?}");
     }
 
     fn shortest_buf_duration(args: &ArgVec) -> Option<&str> {
@@ -3818,6 +4071,23 @@ mod tests {
             1,
             "{args:?}"
         );
+    }
+
+    #[test]
+    fn loudnorm_caps_shortest_buffer_only_when_audio_shares_the_demuxer() {
+        for (format_name, buffer) in [
+            (Some("matroska,webm"), None),
+            (Some("mov,mp4,m4a,3gp,3g2,mj2"), None),
+            (Some("mpegts"), Some("0.500")),
+            (None, Some("0.500")),
+        ] {
+            let args = loudnorm_args_in(format_name, Duration::ZERO, false, true, (1, 35), true);
+            assert_eq!(
+                shortest_buf_duration(&args),
+                buffer,
+                "{format_name:?}: {args:?}"
+            );
+        }
     }
 
     #[test]
@@ -4096,12 +4366,23 @@ mod tests {
         pipeline.optimize();
         let args = pipeline.args();
 
-        // 30 s at 30000/1001
-        assert_eq!(arg_value(&args, "-t"), Some("30000ms"), "{args:?}");
-        assert!(
-            filter_complex(&args).contains("loop=900:1,fade="),
-            "{args:?}"
+        let image = args.iter().position(|a| a == "watermark.png").unwrap();
+        assert_eq!(
+            args[image - 7..image]
+                .iter()
+                .map(|a| a.as_ref())
+                .collect::<Vec<_>>(),
+            [
+                "-loop",
+                "1",
+                "-framerate",
+                "30000/1001",
+                "-t",
+                "30000ms",
+                "-i"
+            ]
         );
+        assert!(!filter_complex(&args).contains("loop="), "{args:?}");
     }
 
     fn qsv_h264_args(runtime_api: (u16, u16), size: FrameSize) -> ArgVec {

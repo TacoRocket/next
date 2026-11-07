@@ -36,6 +36,8 @@ macro_rules! shared_tests {
                 "1080p_hevc_10.ts",
                 "720p_hevc_10.ts",
                 "480p_hevc_10.ts",
+                "1080p_hevc_12.ts",
+                "1080p_hevc_10_422.ts",
                 "480p_h264_anamorphic.ts",
                 "480p_h264_sps_change.ts",
                 "480p_h264_a53cc.ts"
@@ -156,6 +158,18 @@ macro_rules! shared_tests {
                     ::ffpipeline::pipeline::AudioFormat::Aac,
                     true,
                 ),
+            )
+            .await;
+        }
+
+        /// 1 fps gives a 2-frame GOP, too short for preset B-frames (nvenc)
+        #[::rstest::rstest]
+        #[::tokio::test]
+        #[ignore]
+        async fn source_format_1fps(#[values(("h264", 8), ("hevc", 8))] vf: (&'static str, u8)) {
+            $crate::common::shared::run(
+                $accel().await,
+                $crate::common::shared::source_format_1fps(vf),
             )
             .await;
         }
@@ -345,6 +359,48 @@ macro_rules! shared_tests {
             $crate::common::shared::run(
                 $accel().await,
                 $crate::common::shared::segment_keyframes(vf),
+            )
+            .await;
+        }
+
+        /// Longer than -shortest's default 10 s buffer, which can hold every surface of a
+        /// fixed hardware pool while it waits for audio from a separate input.
+        #[::rstest::rstest]
+        #[::tokio::test]
+        #[ignore]
+        async fn past_shortest_buffer(
+            #[values(
+                "long_gop_h264.mkv",
+                "long_gop_h264.mp4",
+                "long_gop_h264.ts",
+                "long_gop_h264_late_audio.mkv"
+            )]
+            src: &'static str,
+        ) {
+            $crate::common::shared::run(
+                $accel().await,
+                $crate::common::shared::past_shortest_buffer(src),
+            )
+            .await;
+        }
+
+        /// loudnorm delays audio ~3 s, and -shortest holds that much video, enough to use up a
+        /// fixed hardware pool.
+        #[::rstest::rstest]
+        #[::tokio::test]
+        #[ignore]
+        async fn past_shortest_buffer_loudness(
+            #[values(
+                "long_gop_h264.mkv",
+                "long_gop_h264.mp4",
+                "long_gop_h264.ts",
+                "long_gop_h264_late_audio.mkv"
+            )]
+            src: &'static str,
+        ) {
+            $crate::common::shared::run(
+                $accel().await,
+                $crate::common::shared::past_shortest_buffer_loudness(src),
             )
             .await;
         }
@@ -623,6 +679,8 @@ macro_rules! shared_tests {
             #[values(
                 "1080p_h264.ts",
                 "1080p_hevc_10.ts",
+                "1080p_hevc_10_422.ts",
+                "1080p_hevc_12.ts",
                 "720p_h264.ts",
                 "480p_h264.ts",
                 "480p_h264_anamorphic.ts",
@@ -640,6 +698,21 @@ macro_rules! shared_tests {
                     vf,
                     $crate::common::TestWatermark::default(),
                 ),
+            )
+            .await;
+        }
+
+        /// A rebuild used to end the output on qsv (overlay_qsv stops when its overlay input
+        /// ends without a frame) and drop the watermark everywhere else.
+        #[::rstest::rstest]
+        #[::tokio::test]
+        #[ignore]
+        async fn watermark_graph_rebuild(
+            #[values(("h264", 8), ("hevc", 8))] vf: (&'static str, u8),
+        ) {
+            $crate::common::shared::run(
+                $accel().await,
+                $crate::common::shared::watermark_graph_rebuild(vf),
             )
             .await;
         }
@@ -796,6 +869,7 @@ pub fn transcode(src: &'static str, res: FrameSize, vf: (&str, u8), af: AudioFor
         text_color: None,
         check_av_alignment: false,
         check_segments: false,
+        check_watermark_persists: false,
         channel_tones: None,
     }
 }
@@ -815,6 +889,7 @@ fn source_sized(src: &'static str, size: FrameSize) -> TestCase {
         text_color: None,
         check_av_alignment: false,
         check_segments: false,
+        check_watermark_persists: false,
         channel_tones: None,
     }
 }
@@ -1051,6 +1126,25 @@ pub fn segment_keyframes(vf: (&str, u8)) -> TestCase {
     test_case
 }
 
+/// a 1-frame segment probes as 2 fps
+pub fn source_format_1fps(vf: (&str, u8)) -> TestCase {
+    let mut test_case = transcode("1080p_h264_1fps.mp4", SIZE_1080P, vf, AudioFormat::Aac);
+    test_case.params.duration = Duration::from_secs(4);
+    test_case
+}
+
+pub fn past_shortest_buffer(src: &'static str) -> TestCase {
+    let mut test_case = transcode(src, SIZE_720P, ("h264", 8), AudioFormat::Aac);
+    test_case.params.duration = Duration::from_secs(12);
+    test_case
+}
+
+pub fn past_shortest_buffer_loudness(src: &'static str) -> TestCase {
+    let mut test_case = past_shortest_buffer(src);
+    test_case.params.loudness = Some(AudioLoudnessSettings::default());
+    test_case
+}
+
 pub fn loudness_normalization() -> TestCase {
     let mut test_case = source_sized("1080p_h264.ts", SIZE_1080P);
     test_case.params.loudness = Some(AudioLoudnessSettings::default());
@@ -1149,6 +1243,20 @@ pub fn watermark(
 ) -> TestCase {
     let mut test_case = transcode(src, res, vf, AudioFormat::Aac);
     test_case.params.watermark = Some(watermark);
+    test_case
+}
+
+/// The fixture's mid-stream SPS change makes ffmpeg rebuild the filtergraph, and the
+/// rebuilt graph only gets a watermark frame if the image input is still producing them.
+pub fn watermark_graph_rebuild(vf: (&str, u8)) -> TestCase {
+    let mut test_case = watermark(
+        "480p_h264_reinit.ts",
+        SIZE_1080P,
+        vf,
+        TestWatermark::default(),
+    );
+    test_case.params.duration = Duration::from_secs(2);
+    test_case.check_watermark_persists = true;
     test_case
 }
 
