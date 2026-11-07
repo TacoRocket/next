@@ -16,7 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Optional fork `credit_squeeze.advertisement` plays one moving SDR ad behind a small program inset, switches to ad audio (or silence), and preserves the original program end. The scheduler supplies ad boundaries and elapsed credits time; unsupported or unreadable ads keep the original picture and audio. Requires a supporting fork worker; upstream playout URI remains 0.0.7.
 - Fork channel option `normalization.video.tone_mapping`: `on` (default), `sdr_fallback`, or `off`. SDR fallback preserves compatible HDR and converts unsupported items with an API status reason; Off remains strict. Copied video is unchanged. Keeps upstream schema URI 0.1.3; requires a compatible fork worker.
 - Optional VAAPI HDR10 tone mapping with `normalization.video.hdr_vaapi_lut: true` (default false). Uses the fork's fixed-Hable LUT filter for known limited-range 10-bit BT.2020/PQ input without Dolby Vision, when producing 8-bit output. Missing filters and other inputs retain the existing mapping path.
-- Optional fork field on playout 0.0.7: per-item `credit_squeeze` shrinks SDR video over a local still at an item-relative marker, retaining audio and the original end time. Requires VAAPI/Vulkan sharing and the fork runtime with `concat=preserve_ts`; unsupported items remain full-screen and report `credit_squeeze_unavailable`.
+- Optional fork field on playout 0.0.7: per-item `credit_squeeze` shrinks SDR video over a local still at an item-relative marker, retaining audio and the original end time. Requires VAAPI/Vulkan sharing and the fork runtime with `concat=preserve_ts`; items rejected by the worker remain full-screen and report `credit_squeeze_unavailable`.
+
+### Changed
+- Credit squeeze assumes the bundled FFmpeg concat patch. The worker logs a warning when it cannot match the FFmpeg build and skips the extra concat probe. With a custom build missing `preserve_ts`, a squeeze can fail at the start of an item. Add `concat` to `disabled_filters` to play it full-screen.
 
 ### Fixed
 - Allow native NV12 CRT output and Experimental point chroma on positive-even active picture sizes before padding, including letterboxed and pillarboxed pictures. Existing runtime capability checks and conversion fallback remain.

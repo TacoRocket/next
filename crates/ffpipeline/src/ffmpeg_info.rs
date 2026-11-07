@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::Into;
 use std::iter::Iterator;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Once};
 
 use ersatztv_core::process;
 use serde::Serialize;
@@ -28,11 +28,8 @@ static KNOWN_FILTERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 
 /// filter presence alone cannot tell a patched build from upstream, so these
 /// filters also get their options probed
-static OPTION_PROBED_FILTERS: &[KnownVideoFilter] = &[
-    KnownVideoFilter::VppQsv,
-    KnownVideoFilter::LibPlacebo,
-    KnownVideoFilter::Concat,
-];
+static OPTION_PROBED_FILTERS: &[KnownVideoFilter] =
+    &[KnownVideoFilter::VppQsv, KnownVideoFilter::LibPlacebo];
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownHardwareAccel {
@@ -147,7 +144,18 @@ impl FfmpegInfo {
     ) -> Result<FfmpegInfo, FFPipelineError> {
         let hwaccels = Self::load_hw_accels(path).await?;
         let decoders = Self::load_decoders(path).await?;
-        let video_filters = Self::load_video_filters(path, disabled_filters).await?;
+        let (video_filters, version_banner) =
+            Self::load_video_filters(path, disabled_filters).await?;
+
+        if !Self::matches_bundled_version(&version_banner).await {
+            static WARN_CUSTOM_BUILD: Once = Once::new();
+            WARN_CUSTOM_BUILD.call_once(|| {
+                log::warn!(
+                    "FFmpeg at {} could not be matched to the bundled build. Fork features assume bundled FFmpeg. If credit squeeze fails, add concat to disabled_filters to play full-screen.",
+                    path.display()
+                );
+            });
+        }
 
         // filter preferred by known video filters
         let mut preferred: HashMap<String, usize> = HashMap::new();
@@ -349,12 +357,25 @@ impl FfmpegInfo {
         options
     }
 
+    async fn matches_bundled_version(banner: &str) -> bool {
+        let Ok(version) = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-version.txt").await else {
+            return false;
+        };
+        // FFmpeg indents library versions in its banner and appends a license after the version record.
+        let banner = banner.trim();
+        banner.starts_with("ffmpeg version ")
+            && banner.lines().map(str::trim).eq(version
+                .lines()
+                .take_while(|line| !line.trim().is_empty())
+                .map(str::trim))
+    }
+
     async fn load_video_filters(
         path: &Path,
         disabled_filters: &[String],
-    ) -> Result<HashSet<String>, FFPipelineError> {
+    ) -> Result<(HashSet<String>, String), FFPipelineError> {
         let output = process::command(path)
-            .args(["-hide_banner", "-filters"])
+            .arg("-filters")
             .output()
             .await
             .map_err(|_| FFPipelineError::FfmpegCapabilitiesError(String::from("filters")))?;
@@ -373,7 +394,10 @@ impl FfmpegInfo {
             }
         }
 
-        Ok(filters)
+        Ok((
+            filters,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
     }
 }
 
