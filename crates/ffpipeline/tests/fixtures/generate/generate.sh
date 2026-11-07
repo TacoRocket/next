@@ -31,9 +31,9 @@ progressive_h264() { # name size
         -c:v libx264 -c:a aac -ac 1 "$out/$1"
 }
 
-ten_bit() { # name size codec
+ten_bit() { # name size codec [pix_fmt]
     ff -f lavfi -i "testsrc=s=$2:r=24:d=2" $(silence 2) \
-        -c:v "$3" -pix_fmt yuv420p10le -c:a aac -shortest "$out/$1"
+        -c:v "$3" -pix_fmt "${4:-yuv420p10le}" -c:a aac -shortest "$out/$1"
 }
 
 bars_hevc() { # name size x265-params [preset [audio-bitrate [filters]]]
@@ -55,6 +55,8 @@ gen_480p_h264_10.ts() { ten_bit 480p_h264_10.ts 640x480 libx264; }
 gen_1080p_hevc_10.ts() { ten_bit 1080p_hevc_10.ts 1920x1080 libx265; }
 gen_720p_hevc_10.ts() { ten_bit 720p_hevc_10.ts 1280x720 libx265; }
 gen_480p_hevc_10.ts() { ten_bit 480p_hevc_10.ts 640x480 libx265; }
+gen_1080p_hevc_12.ts() { ten_bit 1080p_hevc_12.ts 1920x1080 libx265 yuv420p12le; }
+gen_1080p_hevc_10_422.ts() { ten_bit 1080p_hevc_10_422.ts 1920x1080 libx265 yuv422p10le; }
 
 gen_480p_h264_anamorphic.ts() {
     ff -f lavfi -i "testsrc=s=720x480:r=30:d=2" $(silence 2) -vf setsar=32/27 \
@@ -70,6 +72,21 @@ gen_480p_h264_sps_change.ts() {
         -c:v libx264 -level 5.1 -g 15 -c:a aac -shortest "$work/sps_1.ts"
     printf "file '%s'\n" "$work/sps_0.ts" "$work/sps_1.ts" > "$list"
     ff -f concat -safe 0 -i "$list" -c copy "$out/480p_h264_sps_change.ts"
+}
+
+gen_480p_h264_reinit.ts() {
+    # profile and level reinit the qsv decoder; colour tags re-tag frames from every other decoder
+    local list=$work/reinit.txt
+    ff -f lavfi -i "testsrc2=s=640x480:r=30:d=0.5" $(tone 0.5) \
+        -c:v libx264 -profile:v high -level 3.0 -g 15 \
+        -colorspace bt709 -color_primaries bt709 -color_trc bt709 \
+        -c:a aac -ac 1 -shortest "$work/reinit_0.ts"
+    ff -f lavfi -i "testsrc2=s=640x480:r=30:d=1.5" $(tone 1.5) \
+        -c:v libx264 -profile:v main -level 4.0 -g 15 \
+        -colorspace smpte170m -color_primaries smpte170m -color_trc smpte170m \
+        -c:a aac -ac 1 -shortest "$work/reinit_1.ts"
+    printf "file '%s'\n" "$work/reinit_0.ts" "$work/reinit_1.ts" > "$list"
+    ff -f concat -safe 0 -i "$list" -c copy "$out/480p_h264_reinit.ts"
 }
 
 gen_480p_h264_a53cc.ts() {
@@ -218,6 +235,11 @@ gen_1080p_h264_23976.mkv() {
 gen_720p_h264_50.ts() {
     ff -f lavfi -i "testsrc2=s=1280x720:r=50:d=2" $(tone 2) \
         -c:v libx264 -crf 35 -c:a aac -ac 1 "$out/720p_h264_50.ts"
+}
+# 1 fps: 2-frame GOP
+gen_1080p_h264_1fps.mp4() {
+    ff -f lavfi -i "testsrc2=s=1920x1080:r=1:d=4" $(tone 4) \
+        -c:v libx264 -crf 35 -c:a aac -ac 1 -fflags +bitexact "$out/1080p_h264_1fps.mp4"
 }
 # testsrc: MPEG-2 can't make testsrc2 small
 gen_576i_mpeg2.ts() {
@@ -376,6 +398,12 @@ gen_long_gop_h264.mkv() {
 gen_long_gop_h264.ts() {
     [ -f "$out/long_gop_h264.mp4" ] || gen_long_gop_h264.mp4
     ff -i "$out/long_gop_h264.mp4" -c copy "$out/long_gop_h264.ts"
+}
+gen_long_gop_h264_late_audio.mkv() {
+    [ -f "$out/long_gop_h264.mp4" ] || gen_long_gop_h264.mp4
+    # audio reaches the muxer 6 s late and is written as it arrives, with its own timestamps
+    ff -i "$out/long_gop_h264.mp4" -itsoffset 6 -i "$out/long_gop_h264.mp4" -map 0:v -map 1:a -c copy \
+        -bsf:a "setts=ts=TS-6/TB" -max_interleave_delta 1 -fflags +bitexact "$out/long_gop_h264_late_audio.mkv"
 }
 gen_long_gop_h264_open.ts() {
     ff $(long_gop_src) -c:v libx264 -preset veryfast -crf 42 -g 150 -bf 3 \

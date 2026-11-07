@@ -342,6 +342,25 @@ mod tests {
     }
 
     #[test]
+    fn codec_outside_policy_does_not_report_pixel_format() {
+        let CopyDecision::Transcode(blockers) = decide_video(
+            &local("matroska"),
+            &ProbeResultVideoStream {
+                pix_fmt: String::from("yuv422p10le"),
+                ..video("prores")
+            },
+        ) else {
+            panic!("ProRes is outside the copy policy");
+        };
+        assert!(blockers.contains(&CopyBlocker::CodecNotAllowed(String::from("prores"))));
+        assert!(
+            !blockers
+                .iter()
+                .any(|reason| matches!(reason, CopyBlocker::PixelFormat(_)))
+        );
+    }
+
+    #[test]
     fn mpeg2video_copies_when_listed() {
         let policy = CopyPolicy {
             formats: vec![VideoFormat::Mpeg2Video],

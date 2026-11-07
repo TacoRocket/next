@@ -62,6 +62,8 @@ pub struct TestCase {
     pub check_av_alignment: bool,
     /// Checks every HLS segment, not just the first, for keyframe-aligned cuts
     pub check_segments: bool,
+    /// The output must cover the whole duration with the default watermark on every frame
+    pub check_watermark_persists: bool,
     /// Tones (Hz) each output channel must carry, in channel order. The other listed
     /// tones must be absent.
     pub channel_tones: Option<&'static [&'static [u32]]>,
@@ -297,6 +299,12 @@ pub async fn run_test_case(test_env: &TestEnv, mut test_case: TestCase) -> Vec<S
     if test_case.check_segments {
         assert_segments_cut_on_keyframes(&test_env.ffprobe, dir.path()).await;
     }
+    if test_case.check_watermark_persists
+        && let Some(size) = video_size
+    {
+        assert_covers_duration(&test_env.ffprobe, dir.path(), duration).await;
+        assert_watermark_on_every_frame(&test_env.ffmpeg, dir.path(), size).await;
+    }
 
     let segment = find_first_segment(dir.path());
     assert_decodes_cleanly(&test_env.ffmpeg, &segment).await;
@@ -310,6 +318,11 @@ pub async fn run_test_case(test_env: &TestEnv, mut test_case: TestCase) -> Vec<S
         assert_av_aligned(&test_env.ffprobe, &segment).await;
     }
     let output_probe = probe_file(&test_env.ffmpeg, &test_env.ffprobe, &segment).await;
+    // scale_rkrga upscales on the default RGA3 cores shift the picture right and down by about 2 px
+    let pixel_shift = match accel {
+        Some(HardwareAccel::Rkmpp(_)) => 2,
+        _ => 0,
+    };
     assert_video(
         &output_probe,
         &test_case.expected_video_codec,
@@ -343,6 +356,7 @@ pub async fn run_test_case(test_env: &TestEnv, mut test_case: TestCase) -> Vec<S
             test_case.audio_source.is_none(),
             size,
             scaling_mode,
+            pixel_shift,
         )
         .await;
     }
@@ -876,7 +890,8 @@ pub async fn assert_pillarboxed(ffmpeg: &Path, path: &Path, size: FrameSize) {
 /// Wrong scale or non-square pixels score about 0.7. Green output scores 0.
 ///
 /// Frames are paired by time from a shared origin, so a picture that is late against
-/// audio fails too; one frame either way is tolerated.
+/// audio fails too; one frame either way is tolerated. With a `pixel_shift`, a picture
+/// moved right and down by that many pixels also matches.
 #[allow(clippy::too_many_arguments)]
 pub async fn assert_matches_source(
     test_env: &TestEnv,
@@ -887,6 +902,7 @@ pub async fn assert_matches_source(
     audio_from_source: bool,
     size: FrameSize,
     scaling_mode: ScalingMode,
+    pixel_shift: u32,
 ) {
     const MIN_SSIM: f64 = 0.9;
     // the largest offset reported by name; beyond it the picture just fails to match
@@ -951,8 +967,15 @@ pub async fn assert_matches_source(
     let ref_seek_arg = format!("{ref_seek:.3}");
 
     // a positive offset pairs each output frame with an earlier source frame
-    let ssim_at = async |offset: i32| {
+    let ssim_shifted = async |offset: i32, shift: u32| {
         let ref_shift = ref_origin - f64::from(offset) / rate.parsed_frame_rate;
+        let (out_crop, ref_crop) = match shift {
+            0 => (String::new(), String::new()),
+            s => (
+                format!(",crop=iw-{}:ih-{}:{s}:{s}", 2 * s, 2 * s),
+                format!(",crop=iw-{}:ih-{}:0:0", 2 * s, 2 * s),
+            ),
+        };
         let fps = &rate.r_frame_rate;
         let result = tokio::time::timeout(
             Duration::from_secs(30),
@@ -976,9 +999,9 @@ pub async fn assert_matches_source(
                 // and repeats soft-telecine frames like the output's cfr does
                 .arg(format!(
                     "[0:v]setpts=PTS-{out_origin}/TB,fps={fps},trim=start={start}:end={end},\
-                     setsar=1,format=yuv420p[out];\
+                     setsar=1,format=yuv420p{out_crop}[out];\
                      [1:v]setpts=PTS-{ref_shift}/TB,fps={fps},trim=start={start}:end={end},\
-                     scale=iw*sar:ih,setsar=1,{fit},format=yuv420p[ref];\
+                     scale=iw*sar:ih,setsar=1,{fit},format=yuv420p{ref_crop}[ref];\
                      [out][ref]ssim=shortest=1"
                 ))
                 .args(["-an", "-f", "null", "-"])
@@ -994,6 +1017,13 @@ pub async fn assert_matches_source(
             .and_then(|(_, rest)| rest.split_whitespace().next())
             .and_then(|value| value.parse::<f64>().ok())
             .unwrap_or_else(|| panic!("no ssim in output:\n{stderr}"))
+    };
+    let ssim_at = async |offset: i32| {
+        let plain = ssim_shifted(offset, 0).await;
+        match pixel_shift {
+            0 => plain,
+            shift => plain.max(ssim_shifted(offset, shift).await),
+        }
     };
 
     let ssim = ssim_at(0).await;
@@ -1569,6 +1599,94 @@ pub async fn assert_segments_cut_on_keyframes(ffprobe: &Path, dir: &Path) {
             "{} does not start on a keyframe: {flags:?}",
             segment.display()
         );
+    }
+}
+
+/// Catches an output that ends early with ffmpeg still exiting 0.
+pub async fn assert_covers_duration(ffprobe: &Path, dir: &Path, duration: Duration) {
+    let mut pts: Vec<f64> = Vec::new();
+    for segment in find_segments(dir) {
+        let output = ersatztv_core::process::command(ffprobe)
+            .args(["-v", "error", "-select_streams", "v:0"])
+            .args(["-show_entries", "packet=pts_time", "-of", "csv=p=0"])
+            .arg(&segment)
+            .output()
+            .await
+            .expect("failed to run ffprobe");
+        pts.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|l| l.trim().trim_end_matches(',').parse::<f64>().ok()),
+        );
+    }
+    let first = pts.iter().copied().fold(f64::INFINITY, f64::min);
+    let last = pts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // allow for a dropped frame or two at either end
+    let covered = last - first;
+    let wanted = duration.as_secs_f64() - 0.2;
+    assert!(
+        covered >= wanted,
+        "output video covers {covered:.3}s of {:.3}s ({} packets)",
+        duration.as_secs_f64(),
+        pts.len()
+    );
+}
+
+/// Mean luma of a box in each output frame, in frame order.
+async fn box_luma(ffmpeg: &Path, segment: &Path, side: u32, x: u32, y: u32) -> Vec<f64> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        ersatztv_core::process::command(ffmpeg)
+            .args(["-nostdin", "-v", "error", "-i"])
+            .arg(segment)
+            .args(["-map", "0:v:0", "-an", "-vf"])
+            .arg(format!(
+                "crop={side}:{side}:{x}:{y},signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-"
+            ))
+            .args(["-f", "null", "-"])
+            .output(),
+    )
+    .await
+    .expect("luma check timed out")
+    .expect("failed to decode output");
+    assert!(
+        output.status.success(),
+        "luma check failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("lavfi.signalstats.YAVG="))
+        .filter_map(|v| v.trim().parse().ok())
+        .collect()
+}
+
+/// For `TestWatermark::default()` (top left, 10% wide, 5% margins, frame-relative) over a
+/// 4:3 source in 16:9 output, so the watermark sits in the left pillar and the mirrored box
+/// in the right pillar is black. A watermark lost partway through fails on that frame.
+pub async fn assert_watermark_on_every_frame(ffmpeg: &Path, dir: &Path, size: FrameSize) {
+    let width = size.width;
+    let mark = width / 10;
+    let side = (mark / 3) & !1;
+    let x = (width / 20 + (mark - side) / 2) & !1;
+    let y = (size.height / 20 + (mark - side) / 2) & !1;
+    let mirror_x = (width - x - side) & !1;
+    for segment in find_segments(dir) {
+        let marked = box_luma(ffmpeg, &segment, side, x, y).await;
+        let bare = box_luma(ffmpeg, &segment, side, mirror_x, y).await;
+        assert!(!marked.is_empty(), "no frames in {}", segment.display());
+        assert_eq!(
+            marked.len(),
+            bare.len(),
+            "frame count differs between boxes"
+        );
+        for (frame, (m, b)) in marked.iter().zip(&bare).enumerate() {
+            assert!(
+                m - b > 20.0,
+                "no watermark in frame {frame} of {}: luma {m:.1} vs {b:.1} in the bare pillar",
+                segment.display()
+            );
+        }
     }
 }
 

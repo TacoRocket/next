@@ -29,7 +29,7 @@ pub const PATH_FIELDS: &[&str] = &[
     "/normalization/subtitle/fonts_folder",
 ];
 
-const DEFAULT_VAAPI_DEVICE: &str = "/dev/dri/renderD128";
+pub(crate) const DEFAULT_VAAPI_DEVICE: &str = "/dev/dri/renderD128";
 
 /// Settings for one channel: where its playout is, which ffmpeg to use, and the output format.
 /// A relative path in any of these settings is relative to the file that sets it.
@@ -485,11 +485,33 @@ pub struct ScaleOptions {
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScaleVaapiOptions {
-    /// FFmpeg `scale_vaapi` mode, e.g. `default` for the driver's scaler or `hq`.
-    /// Omitted leaves FFmpeg's existing choice unchanged.
-    #[serde(default, deserialize_with = "deserialize_filter_option")]
-    #[schemars(regex(pattern = r"^[a-z0-9_.+-]+$"))]
-    pub mode: Option<String>,
+    /// FFmpeg VAAPI scaling algorithm. Omitted leaves FFmpeg's existing choice unchanged.
+    #[serde(default)]
+    pub mode: Option<ScaleVaapiMode>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleVaapiMode {
+    /// Let the VAAPI driver choose its default scaling algorithm.
+    Default,
+    /// Prefer the driver's fast scaling algorithm.
+    Fast,
+    /// Prefer the driver's high-quality scaling algorithm.
+    Hq,
+    /// Use nonlinear anamorphic scaling where the driver supports it.
+    NlAnamorphic,
+}
+
+impl ScaleVaapiMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Fast => "fast",
+            Self::Hq => "hq",
+            Self::NlAnamorphic => "nl_anamorphic",
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
@@ -560,7 +582,10 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
                 flags: value.scale.and_then(|o| o.flags),
             },
             scale_vaapi: ffpipeline::output_settings::ScaleVaapiOptions {
-                mode: value.scale_vaapi.and_then(|o| o.mode),
+                mode: value
+                    .scale_vaapi
+                    .and_then(|o| o.mode)
+                    .map(|mode| mode.as_str().to_owned()),
             },
             tonemap: ffpipeline::output_settings::TonemapOptions {
                 tonemap: value.tonemap.and_then(|o| o.tonemap),
@@ -608,7 +633,7 @@ impl From<ScalingMode> for ffpipeline::output_settings::ScalingMode {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum VaapiDriver {
     /// Intel media driver, for Broadwell and newer.
@@ -662,7 +687,7 @@ pub enum VideoFormat {
     Mpeg2Video,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HardwareAccel {
     /// AMD AMF. Windows only.
@@ -686,6 +711,15 @@ impl HardwareAccel {
         &self,
         channel_config: &ChannelConfig,
     ) -> Option<ffpipeline::hw_accel::HardwareAccel> {
+        self.try_to_pipeline(channel_config)
+            .inspect_err(|e| log::error!("{e}; channel will not use hardware accel"))
+            .ok()
+    }
+
+    pub fn try_to_pipeline(
+        &self,
+        channel_config: &ChannelConfig,
+    ) -> Result<ffpipeline::hw_accel::HardwareAccel, String> {
         match self {
             HardwareAccel::Amf => {
                 let target = channel_config.normalization.video.amf_device.map_or(
@@ -704,14 +738,11 @@ impl HardwareAccel {
                                 adapter.description
                             );
                         }
-                        Some(ffpipeline::hw_accel::HardwareAccel::Amf(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::Amf(
                             ffpipeline::accel::amf::Amf { capabilities },
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe AMF capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe AMF capabilities: {e}")),
                 }
             }
             HardwareAccel::Cuda => {
@@ -727,14 +758,11 @@ impl HardwareAccel {
                                 log::debug!("Vulkan unavailable for CUDA tonemapping: {e}")
                             })
                             .ok();
-                        Some(ffpipeline::hw_accel::HardwareAccel::Cuda(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::Cuda(
                             ffpipeline::accel::cuda::Cuda::new(capabilities, vulkan),
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe NVIDIA capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe NVIDIA capabilities: {e}")),
                 }
             }
             HardwareAccel::Qsv => {
@@ -742,14 +770,11 @@ impl HardwareAccel {
                 match capabilities {
                     Ok(capabilities) => {
                         log::debug!("detected QSV capabilities: {capabilities}");
-                        Some(ffpipeline::hw_accel::HardwareAccel::Qsv(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::Qsv(
                             ffpipeline::accel::qsv::Qsv { capabilities },
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe QSV capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe QSV capabilities: {e}")),
                 }
             }
             HardwareAccel::Rkmpp => {
@@ -757,14 +782,11 @@ impl HardwareAccel {
                 match capabilities {
                     Ok(capabilities) => {
                         log::debug!("detected rkmpp capabilities: {:?}", capabilities);
-                        Some(ffpipeline::hw_accel::HardwareAccel::Rkmpp(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::Rkmpp(
                             ffpipeline::accel::rkmpp::Rkmpp { capabilities },
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe rkmpp capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe rkmpp capabilities: {e}")),
                 }
             }
             HardwareAccel::Vaapi => {
@@ -778,7 +800,9 @@ impl HardwareAccel {
                         video.vaapi_driver.clone().map(Into::into);
 
                     let capabilities = ffpipeline::capabilities::vaapi::VaapiCapabilities::probe(
-                        vaapi_device.to_str()?,
+                        vaapi_device
+                            .to_str()
+                            .ok_or("vaapi device path is not UTF-8")?,
                         driver.as_ref().map(|d| d.to_string()).as_deref(),
                     );
 
@@ -793,11 +817,14 @@ impl HardwareAccel {
 
                             let opencl_capabilities =
                                 ffpipeline::capabilities::opencl::OpenCLCapabilities::probe()
+                                    .inspect_err(|e| {
+                                        log::debug!("OpenCL unavailable for VAAPI: {e}")
+                                    })
                                     .unwrap_or_default();
 
                             let vulkan_capabilities =
                                 ffpipeline::capabilities::vulkan::VulkanCapabilities::probe_for_vaapi(
-                                    vaapi_device.to_str()?,
+                                    vaapi_device.to_str().ok_or("vaapi device path is not UTF-8")?,
                                     &capabilities,
                                 )
                                 .inspect_err(|e| {
@@ -805,9 +832,12 @@ impl HardwareAccel {
                                 })
                                 .ok();
 
-                            Some(ffpipeline::hw_accel::HardwareAccel::Vaapi(
+                            Ok(ffpipeline::hw_accel::HardwareAccel::Vaapi(
                                 ffpipeline::accel::vaapi::Vaapi {
-                                    device: vaapi_device.to_str()?.to_owned(),
+                                    device: vaapi_device
+                                        .to_str()
+                                        .ok_or("vaapi device path is not UTF-8")?
+                                        .to_owned(),
                                     driver,
                                     capabilities,
                                     opencl_capabilities,
@@ -818,31 +848,24 @@ impl HardwareAccel {
                                 },
                             ))
                         }
-                        Err(e) => {
-                            log::error!("failed to probe VAAPI capabilities: {}", e);
-                            None
-                        }
+                        Err(e) => Err(format!("failed to probe VAAPI capabilities: {e}")),
                     }
                 } else {
-                    log::error!(
-                        "vaapi device `{}` does not exist! channel will not use hardware accel",
+                    Err(format!(
+                        "vaapi device `{}` does not exist",
                         vaapi_device.display()
-                    );
-                    None
+                    ))
                 }
             }
             HardwareAccel::VideoToolbox => {
                 match ffpipeline::capabilities::videotoolbox::VideoToolboxCapabilities::probe() {
                     Ok(capabilities) => {
                         log::debug!("detected VideoToolbox capabilities: {:?}", capabilities);
-                        Some(ffpipeline::hw_accel::HardwareAccel::VideoToolbox(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::VideoToolbox(
                             ffpipeline::accel::video_toolbox::VideoToolbox::new(capabilities),
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe VideoToolbox capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe VideoToolbox capabilities: {e}")),
                 }
             }
             HardwareAccel::Vulkan => {
@@ -850,14 +873,11 @@ impl HardwareAccel {
                 match capabilities {
                     Ok(capabilities) => {
                         log::debug!("detected Vulkan capabilities: {:?}", capabilities);
-                        Some(ffpipeline::hw_accel::HardwareAccel::Vulkan(
+                        Ok(ffpipeline::hw_accel::HardwareAccel::Vulkan(
                             ffpipeline::accel::vulkan::Vulkan { capabilities },
                         ))
                     }
-                    Err(e) => {
-                        log::error!("failed to probe Vulkan capabilities: {}", e);
-                        None
-                    }
+                    Err(e) => Err(format!("failed to probe Vulkan capabilities: {e}")),
                 }
             }
         }
@@ -920,6 +940,16 @@ impl ChannelConfig {
         output_folder: &PathBuf,
         number: &str,
     ) -> Result<ChannelConfig, ChannelError> {
+        Self::from_sources_over(Value::Null, sources, output_folder, number).await
+    }
+
+    /// `sources` merge over `base`, which isn't version checked.
+    pub async fn from_sources_over(
+        base: Value,
+        sources: &[PathBuf],
+        output_folder: &PathBuf,
+        number: &str,
+    ) -> Result<ChannelConfig, ChannelError> {
         let stdin_count = sources
             .iter()
             .filter(|s| s.to_str().is_some_and(|p| p == "-"))
@@ -931,7 +961,7 @@ impl ChannelConfig {
             )));
         }
 
-        let mut config_value: Value = Value::Null;
+        let mut config_value = base;
 
         for config_path in sources {
             let relative_to;
@@ -983,7 +1013,8 @@ impl ChannelConfig {
             ersatztv_core::deep_merge(&mut config_value, v);
         }
 
-        let mut channel_config: ChannelConfig = serde_json::from_value(config_value)
+        // the path names the field; the merged value can't say which source lacked it
+        let mut channel_config: ChannelConfig = serde_path_to_error::deserialize(config_value)
             .map_err(|e| ChannelError::ChannelConfigFailure(e.to_string()))?;
         channel_config.version = Some(SCHEMA.uri());
 
@@ -1134,6 +1165,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vaapi_scaler_rejects_typos_at_config_load() {
+        for mode in ["default", "fast", "hq", "nl_anamorphic"] {
+            let mut source = base();
+            source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": mode}});
+            let config = load(&[source]).await.unwrap();
+            let options: ffpipeline::output_settings::VideoFilterOptions =
+                config.normalization.video.filters.into();
+            assert_eq!(options.scale_vaapi.mode.as_deref(), Some(mode));
+        }
+        let mut source = base();
+        source["normalization"]["video"]["filters"] = json!({"scale_vaapi": {"mode": "defualt"}});
+        assert!(config_error(load(&[source]).await).contains("defualt"));
+    }
+
+    #[tokio::test]
     async fn versioned_overlay_merges() {
         let overlay = json!({
             "version": SCHEMA.uri(),
@@ -1161,6 +1207,24 @@ mod tests {
             }
             other => panic!("expected ChannelConfigSchemaVersion, got {:?}", other.err()),
         }
+    }
+
+    #[tokio::test]
+    async fn error_names_the_field() {
+        let mut missing = base();
+        missing["normalization"] = json!({ "video": {} });
+        assert_eq!(
+            config_error(load(&[missing]).await),
+            "normalization: missing field `audio`"
+        );
+
+        let mut invalid = base();
+        invalid["normalization"]["video"]["bit_depth"] = json!("ten");
+        let message = config_error(load(&[invalid]).await);
+        assert!(
+            message.starts_with("normalization.video.bit_depth: "),
+            "{message}"
+        );
     }
 
     #[tokio::test]

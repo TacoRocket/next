@@ -28,8 +28,11 @@ static KNOWN_FILTERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 
 /// filter presence alone cannot tell a patched build from upstream, so these
 /// filters also get their options probed
-static OPTION_PROBED_FILTERS: &[KnownVideoFilter] =
-    &[KnownVideoFilter::VppQsv, KnownVideoFilter::LibPlacebo];
+static OPTION_PROBED_FILTERS: &[KnownVideoFilter] = &[
+    KnownVideoFilter::VppQsv,
+    KnownVideoFilter::LibPlacebo,
+    KnownVideoFilter::Concat,
+];
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownHardwareAccel {
@@ -60,6 +63,8 @@ impl From<KnownHardwareAccel> for Cow<'static, str> {
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownVideoFilter {
+    #[strum(serialize = "concat")]
+    Concat,
     #[strum(serialize = "bwdif")]
     Bwdif,
     #[strum(serialize = "bwdif_cuda")]
@@ -142,7 +147,8 @@ impl FfmpegInfo {
     ) -> Result<FfmpegInfo, FFPipelineError> {
         let hwaccels = Self::load_hw_accels(path).await?;
         let decoders = Self::load_decoders(path).await?;
-        let video_filters = Self::load_video_filters(path, disabled_filters).await?;
+        let (video_filters, version_banner) =
+            Self::load_video_filters(path, disabled_filters).await?;
 
         // filter preferred by known video filters
         let mut preferred: HashMap<String, usize> = HashMap::new();
@@ -156,7 +162,13 @@ impl FfmpegInfo {
         for filter in OPTION_PROBED_FILTERS {
             let name = filter.to_string();
             if video_filters.contains(&name) {
-                let options = Self::load_video_filter_options(path, &name).await?;
+                let options = if matches!(filter, KnownVideoFilter::Concat)
+                    && let Some(options) = Self::bundled_concat_options(&version_banner).await
+                {
+                    options
+                } else {
+                    Self::load_video_filter_options(path, &name).await?
+                };
                 video_filter_options.insert(name, options);
             }
         }
@@ -168,6 +180,12 @@ impl FfmpegInfo {
             preferred_filters: preferred,
             video_filter_options,
         })
+    }
+
+    pub fn hw_accels(&self) -> Vec<String> {
+        let mut hwaccels: Vec<String> = self.hwaccels.iter().cloned().collect();
+        hwaccels.sort();
+        hwaccels
     }
 
     pub fn has_hw_accel(&self, hw_accel: &KnownHardwareAccel) -> bool {
@@ -338,12 +356,36 @@ impl FfmpegInfo {
         options
     }
 
+    /// Tunarr records the bundled executable's version and full help when building the image.
+    /// The -filters banner contains the same build identity as -version, with indented lines.
+    async fn bundled_concat_options(banner: &str) -> Option<HashSet<String>> {
+        let version = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-version.txt")
+            .await
+            .ok()?;
+        let banner = banner.trim();
+        if !banner.starts_with("ffmpeg version ")
+            || !banner.lines().map(str::trim).eq(version
+                .lines()
+                .take_while(|line| !line.trim().is_empty())
+                .map(str::trim))
+        {
+            return None;
+        }
+        let help = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-help.txt")
+            .await
+            .ok()?;
+        let (_, section) = help.split_once("\nconcat AVOptions:\n")?;
+        let (options, _) = section.split_once("\n\n")?;
+        let options = Self::parse_filter_options(options);
+        (!options.is_empty()).then_some(options)
+    }
+
     async fn load_video_filters(
         path: &Path,
         disabled_filters: &[String],
-    ) -> Result<HashSet<String>, FFPipelineError> {
+    ) -> Result<(HashSet<String>, String), FFPipelineError> {
         let output = process::command(path)
-            .args(["-hide_banner", "-filters"])
+            .arg("-filters")
             .output()
             .await
             .map_err(|_| FFPipelineError::FfmpegCapabilitiesError(String::from("filters")))?;
@@ -362,7 +404,10 @@ impl FfmpegInfo {
             }
         }
 
-        Ok(filters)
+        Ok((
+            filters,
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
     }
 }
 
