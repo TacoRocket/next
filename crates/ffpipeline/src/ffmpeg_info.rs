@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::Into;
 use std::iter::Iterator;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Once};
 
 use ersatztv_core::process;
 use serde::Serialize;
@@ -28,11 +28,8 @@ static KNOWN_FILTERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 
 /// filter presence alone cannot tell a patched build from upstream, so these
 /// filters also get their options probed
-static OPTION_PROBED_FILTERS: &[KnownVideoFilter] = &[
-    KnownVideoFilter::VppQsv,
-    KnownVideoFilter::LibPlacebo,
-    KnownVideoFilter::Concat,
-];
+static OPTION_PROBED_FILTERS: &[KnownVideoFilter] =
+    &[KnownVideoFilter::VppQsv, KnownVideoFilter::LibPlacebo];
 
 #[derive(Display, EnumIter, IntoStaticStr, Debug, PartialEq)]
 pub enum KnownHardwareAccel {
@@ -150,6 +147,16 @@ impl FfmpegInfo {
         let (video_filters, version_banner) =
             Self::load_video_filters(path, disabled_filters).await?;
 
+        if !Self::matches_bundled_version(&version_banner).await {
+            static WARN_CUSTOM_BUILD: Once = Once::new();
+            WARN_CUSTOM_BUILD.call_once(|| {
+                log::warn!(
+                    "FFmpeg at {} could not be matched to the bundled build. Fork features assume bundled FFmpeg. If credit squeeze fails, add concat to disabled_filters to play full-screen.",
+                    path.display()
+                );
+            });
+        }
+
         // filter preferred by known video filters
         let mut preferred: HashMap<String, usize> = HashMap::new();
         for (idx, filter) in preferred_filters.iter().enumerate() {
@@ -162,13 +169,7 @@ impl FfmpegInfo {
         for filter in OPTION_PROBED_FILTERS {
             let name = filter.to_string();
             if video_filters.contains(&name) {
-                let options = if matches!(filter, KnownVideoFilter::Concat)
-                    && let Some(options) = Self::bundled_concat_options(&version_banner).await
-                {
-                    options
-                } else {
-                    Self::load_video_filter_options(path, &name).await?
-                };
+                let options = Self::load_video_filter_options(path, &name).await?;
                 video_filter_options.insert(name, options);
             }
         }
@@ -356,28 +357,17 @@ impl FfmpegInfo {
         options
     }
 
-    /// Tunarr records the bundled executable's version and full help when building the image.
-    /// The -filters banner contains the same build identity as -version, with indented lines.
-    async fn bundled_concat_options(banner: &str) -> Option<HashSet<String>> {
-        let version = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-version.txt")
-            .await
-            .ok()?;
+    async fn matches_bundled_version(banner: &str) -> bool {
+        let Ok(version) = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-version.txt").await else {
+            return false;
+        };
+        // FFmpeg indents library versions in its banner and appends a license after the version record.
         let banner = banner.trim();
-        if !banner.starts_with("ffmpeg version ")
-            || !banner.lines().map(str::trim).eq(version
+        banner.starts_with("ffmpeg version ")
+            && banner.lines().map(str::trim).eq(version
                 .lines()
                 .take_while(|line| !line.trim().is_empty())
                 .map(str::trim))
-        {
-            return None;
-        }
-        let help = tokio::fs::read_to_string("/opt/tunarr/ffmpeg-help.txt")
-            .await
-            .ok()?;
-        let (_, section) = help.split_once("\nconcat AVOptions:\n")?;
-        let (options, _) = section.split_once("\n\n")?;
-        let options = Self::parse_filter_options(options);
-        (!options.is_empty()).then_some(options)
     }
 
     async fn load_video_filters(

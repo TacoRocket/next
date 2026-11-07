@@ -869,7 +869,7 @@ impl Pipeline {
                 || !matches!(&final_output_settings.accel, Some(HardwareAccel::Vaapi(vaapi)) if vaapi.can_libplacebo_shader(ffmpeg_info) && vaapi.capabilities.can_overlay)
                 || !ffmpeg_info.has_video_filter(&KnownVideoFilter::OverlayVaapi)
                 || !ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
-                || !ffmpeg_info.has_video_filter_option(&KnownVideoFilter::Concat, "preserve_ts")
+                || !ffmpeg_info.has_video_filter(&KnownVideoFilter::Concat)
             {
                 Some(String::from("Credit squeeze requires 8-bit VAAPI, Vulkan sharing, and timestamp-preserving concat; playing full-screen."))
             } else if let Ok(background) = &request.background {
@@ -2666,8 +2666,6 @@ mod tests {
             ]
             .map(|f| f.to_string()),
         );
-        info.video_filter_options
-            .insert("concat".to_owned(), ["preserve_ts".to_owned()].into());
         let mut input = multichannel_ac3_input("main.mkv");
         input.playout_offset = Duration::from_secs(elapsed);
         if squeeze {
