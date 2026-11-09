@@ -6,6 +6,7 @@ use serde::Serialize;
 use strum::{Display, EnumString};
 
 use crate::ArgVec;
+use crate::accel::vaapi::VaapiSdrColor;
 use crate::audio_codec::AudioCodec;
 use crate::audio_decoder::AudioDecoder;
 use crate::audio_filter::AudioFilter;
@@ -14,7 +15,7 @@ use crate::copy_decision::{
     CopyBlocker, CopyDecision, CopyDecisions, VideoCopyContext, audio_copy_decision,
     video_copy_decision,
 };
-use crate::credit_squeeze::{CreditSqueeze, CreditSqueezeBranches, CreditSqueezeColor};
+use crate::credit_squeeze::{CreditSqueeze, CreditSqueezeBranches};
 use crate::degradation::{
     DegradationCode, Degradations, PipelineDegradation, accel_name, format_name,
 };
@@ -1312,7 +1313,7 @@ impl Pipeline {
                 .cloned()
                 .collect();
             let mut credits = normal.clone();
-            normal.push(PipelineFilter::Video(CreditSqueezeColor.into()));
+            normal.push(PipelineFilter::Video(VaapiSdrColor.into()));
             if request.advertisement.is_some() {
                 credits.retain(|filter| {
                     !matches!(
@@ -1615,6 +1616,17 @@ impl Pipeline {
                 }
                 .into(),
             ));
+        }
+
+        // A matching size and pixel format do not guarantee matching SDR color across items.
+        if credit_squeeze.is_none()
+            && video_encoder.preferred_surface() == FrameSurface::Vaapi
+            && video_transcode.bit_depth == 8
+            && hdr == HdrFormat::None
+            && !video_stream.is_dolby_vision()
+            && ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVaapi)
+        {
+            filters.push(PipelineFilter::Video(VaapiSdrColor.into()));
         }
 
         let mut env_vars = Vec::new();
@@ -2925,22 +2937,12 @@ mod tests {
                 .filter(|f| !matches!(f, PipelineFilter::Audio(_)))
                 .collect();
             assert_eq!(
-                format!(
-                    "{:?}",
-                    normal
-                        .filters
-                        .iter()
-                        .filter(|f| !matches!(
-                            f,
-                            PipelineFilter::Video(VideoFilter::CreditSqueezeColor(_))
-                        ))
-                        .collect::<Vec<_>>()
-                ),
+                format!("{:?}", normal.filters),
                 format!("{original_video:?}")
             );
             assert!(matches!(
                 normal.filters.last(),
-                Some(PipelineFilter::Video(VideoFilter::CreditSqueezeColor(_)))
+                Some(PipelineFilter::Video(VideoFilter::VaapiSdrColor(_)))
             ));
             assert!(ordinary.output_context.audio_codec == squeezed.output_context.audio_codec);
             assert_eq!(

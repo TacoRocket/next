@@ -2,12 +2,11 @@ use std::time::Duration;
 
 use crate::accel::vaapi::LibplaceboShaderVaapi;
 use crate::color::FrameColor;
-use crate::ffmpeg_info::FfmpegInfo;
 use crate::filter_chain::FilterChain;
 use crate::frame_size::FrameSize;
 use crate::output_settings::CustomShader;
 use crate::pipeline::{FrameState, FrameSurface, PixelFormat};
-use crate::video_filter::{VideoFilter, VideoFilterOp};
+use crate::video_filter::VideoFilterOp;
 
 /// Timestamp-preserving split/composite/join, adapted from Tunarr's CreditSqueezeFilter.
 /// The program is the frame clock and EOF owner; the looping still cannot extend it.
@@ -171,29 +170,5 @@ impl CreditSqueeze {
         let credits_out = out;
         graph.push(format!("[cs_clock_va][cs_composed]overlay_vaapi=eof_action=pass:repeatlast=0,{effect},setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv{download}[{credits_out}]"));
         graph.join(";")
-    }
-}
-
-/// The join has one colour contract. Convert first; the declaration prevents concat
-/// from trying to insert a software colour converter on VAAPI surfaces.
-#[derive(Debug, Clone)]
-pub struct CreditSqueezeColor;
-
-impl VideoFilterOp for CreditSqueezeColor {
-    fn evaluate(&self, _state: &FrameState, _info: &FfmpegInfo) -> Option<VideoFilter> {
-        Some(self.clone().into())
-    }
-    fn apply_to(&self, state: &mut FrameState) {
-        state.color = FrameColor::bt709();
-        state.pixel_format = PixelFormat::Nv12;
-        state.surface = FrameSurface::Vaapi;
-    }
-    fn required_surface(&self) -> Option<FrameSurface> {
-        Some(FrameSurface::Vaapi)
-    }
-    fn as_arg(&self) -> Option<String> {
-        Some(String::from(
-            "scale_vaapi=format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:out_range=tv,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv",
-        ))
     }
 }
