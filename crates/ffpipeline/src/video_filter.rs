@@ -54,7 +54,7 @@ pub trait VideoFilterOp {
 #[enum_dispatch(VideoFilterOp)]
 pub enum VideoFilter {
     HwUpload(HwUploadFilter),
-    CreditSqueezeColor(crate::credit_squeeze::CreditSqueezeColor),
+    VaapiSdrColor(crate::accel::vaapi::VaapiSdrColor),
     HwDownload(HwDownloadFilter),
     Scale(ScaleFilter),
     Shader(ShaderFilter),

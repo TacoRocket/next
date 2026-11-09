@@ -85,6 +85,12 @@ pub struct ProbeResultVideoStream {
 }
 
 impl ProbeResultVideoStream {
+    pub(crate) fn is_dolby_vision(&self) -> bool {
+        self.dv_profile.is_some()
+            || matches!(self.codec.as_str(), "dvhe" | "dvh1")
+            || self.profile.to_ascii_lowercase().contains("dolby vision")
+    }
+
     pub fn rotation_degrees(&self) -> i32 {
         self.rotation.unwrap_or(0)
     }

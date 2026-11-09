@@ -28,9 +28,7 @@ use crate::video_filter::{
 pub(crate) fn hdr10_lut_eligible(video: &ProbeResultVideoStream) -> bool {
     let color = &video.color_params;
     PixelFormat::parse(&video.pix_fmt).bit_depth() == 10
-        && video.dv_profile.is_none()
-        && !matches!(video.codec.as_str(), "dvhe" | "dvh1")
-        && !video.profile.to_ascii_lowercase().contains("dolby vision")
+        && !video.is_dolby_vision()
         && color.color_transfer.as_deref() == Some("smpte2084")
         && color.color_primaries.as_deref() == Some("bt2020")
         && color.color_space.as_deref() == Some("bt2020nc")
@@ -525,6 +523,28 @@ impl HwAccel for Vaapi {
         // Reorder before upload: narrow BGRA surfaces can corrupt rows on VAAPI.
         !matches!((from, to), (PixelFormat::Bgra, PixelFormat::Rgba))
             && self.capabilities.vpp_supports_format(to)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VaapiSdrColor;
+
+impl VideoFilterOp for VaapiSdrColor {
+    fn evaluate(&self, _state: &FrameState, _info: &FfmpegInfo) -> Option<VideoFilter> {
+        Some(self.clone().into())
+    }
+    fn apply_to(&self, state: &mut FrameState) {
+        state.color = FrameColor::bt709();
+        state.pixel_format = PixelFormat::Nv12;
+        state.surface = FrameSurface::Vaapi;
+    }
+    fn required_surface(&self) -> Option<FrameSurface> {
+        Some(FrameSurface::Vaapi)
+    }
+    fn as_arg(&self) -> Option<String> {
+        Some(String::from(
+            "scale_vaapi=format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:out_range=tv,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv",
+        ))
     }
 }
 
