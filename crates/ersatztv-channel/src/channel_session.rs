@@ -144,6 +144,8 @@ pub struct ChannelSession {
     // the problem; each failed card moves fallbacks one step toward simpler settings
     fallback_escalation: FallbackEscalation,
     degradation_report: Option<DegradationReport>,
+    // VAAPI BGRA upload self-check results by (device, width, height), for the worker's life
+    bgra_upload_checks: HashMap<(String, u32, u32), bool>,
 }
 
 impl ChannelSession {
@@ -265,6 +267,7 @@ impl ChannelSession {
             background_image_failed: false,
             fallback_escalation: FallbackEscalation::default(),
             degradation_report,
+            bgra_upload_checks: HashMap::new(),
         })
     }
 
@@ -706,7 +709,7 @@ impl ChannelSession {
             // a custom shader needs the hardware that just failed
             video.transcode.filter_options.custom_shader = None;
         }
-        let output_settings = OutputSettings {
+        let mut output_settings = OutputSettings {
             audio,
             video,
             accel: if software_video {
@@ -978,6 +981,38 @@ impl ChannelSession {
                 current_item.id
             );
             input_settings.subtitle_input = None;
+        }
+
+        if let Some(ffpipeline::hw_accel::HardwareAccel::Vaapi(vaapi)) = &output_settings.accel
+            && vaapi.may_upload_bgra_subtitles(&self.ffmpeg_info)
+        {
+            let mut verified = Vec::new();
+            for size in pipeline::image_subtitle_upload_sizes(&input_settings, &output_settings) {
+                let key = (vaapi.device.clone(), size.width, size.height);
+                let exact = match self.bgra_upload_checks.get(&key) {
+                    Some(exact) => *exact,
+                    None => {
+                        let exact = vaapi.bgra_upload_is_exact(&self.ffmpeg_path, size).await;
+                        log::debug!(
+                            "VAAPI BGRA upload at {}x{} on {} is {}",
+                            size.width,
+                            size.height,
+                            vaapi.device,
+                            if exact { "exact" } else { "not verified" }
+                        );
+                        self.bgra_upload_checks.insert(key, exact);
+                        exact
+                    }
+                };
+                if exact {
+                    verified.push(size);
+                }
+            }
+            output_settings
+                .video
+                .transcode
+                .filter_options
+                .vaapi_bgra_upload_sizes = verified;
         }
 
         let pts_offset = output_settings.pts_offset;

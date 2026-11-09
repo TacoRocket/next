@@ -32,7 +32,10 @@ pub struct FramePoint {
 
 #[derive(Debug, Clone)]
 pub enum OverlaySource {
-    Subtitle,
+    Subtitle {
+        /// Every size its BGRA frames can be uploaded at passed the caller's VAAPI round trip
+        bgra_upload_verified: bool,
+    },
     Graphics(usize),
 }
 
