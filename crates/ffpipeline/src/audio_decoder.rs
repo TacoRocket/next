@@ -20,8 +20,12 @@ impl AudioDecoder {
         }
     }
 
+    pub(crate) fn downmixes(&self) -> bool {
+        self.input_codec == "ac3" && self.input_channels > 2 && self.output_channels == Some(2)
+    }
+
     pub(crate) fn as_arg(&self) -> ArgVec {
-        if self.input_codec == "ac3" && self.input_channels > 2 && self.output_channels == Some(2) {
+        if self.downmixes() {
             return args!["-acodec", "ac3", "-downmix", "stereo"];
         }
 

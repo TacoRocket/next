@@ -971,10 +971,22 @@ impl Pipeline {
             },
         };
 
+        let audio_decoder = AudioDecoder::new(audio_stream, &final_output_settings);
         let mut filters = vec![
             PipelineFilter::Audio(AudioFilter::LoudNorm {
                 settings: final_output_settings.audio.transcode.loudness.clone(),
                 sample_rate: final_output_settings.audio.transcode.sample_rate,
+                downmix: final_output_settings
+                    .audio
+                    .transcode
+                    .channels
+                    .filter(|&n| n < audio_stream.channels && !audio_decoder.downmixes())
+                    .and_then(|n| match n {
+                        1 => Some("mono"),
+                        2 => Some("stereo"),
+                        6 => Some("5.1"),
+                        _ => None,
+                    }),
             }),
             PipelineFilter::Audio(AudioFilter::Resample),
             PipelineFilter::Audio(AudioFilter::Pad),
@@ -1140,7 +1152,7 @@ impl Pipeline {
                 path: input_settings.audio_input.probe_result.path.to_owned(),
                 seek: input_settings.audio_input.in_point,
                 channels: audio_stream.channels,
-                decoder: AudioDecoder::new(audio_stream, &final_output_settings),
+                decoder: audio_decoder,
                 // decided in optimize, once overlay surfaces are resolved
                 own_input: false,
                 own_input_keeps_sync: own_input_keeps_sync(
@@ -4205,6 +4217,50 @@ mod tests {
             }
         }
         assert_eq!(inputs, 4);
+    }
+
+    fn downmix_graph(source_channels: u32, output_channels: u32, loudness: bool) -> String {
+        let mut input = multichannel_ac3_input("main.mkv");
+        for stream in &mut input.audio_input.probe_result.streams {
+            if let crate::probe::ProbeResultStream::Audio(audio) = stream {
+                // not ac3, so the decoder's own `-downmix` doesn't mask the filter graph
+                audio.codec = "eac3".to_owned();
+                audio.channels = source_channels;
+            }
+        }
+        let mut output = stereo_output();
+        output.audio.transcode.channels = Some(output_channels);
+        if loudness {
+            output.audio.transcode.loudness =
+                Some(crate::output_settings::AudioLoudnessSettings::default());
+        }
+        let pipeline = Pipeline::full(&FfmpegInfo::default(), input, output).unwrap();
+        filter_complex(&pipeline.args())
+    }
+
+    #[test]
+    fn loudnorm_downmixes_first_when_output_has_fewer_channels() {
+        let graph = downmix_graph(6, 2, true);
+        assert!(
+            graph.contains("aformat=channel_layouts=stereo,loudnorm="),
+            "{graph}"
+        );
+    }
+
+    #[test]
+    fn loudnorm_does_not_downmix_when_channel_counts_match() {
+        for channels in [6, 2] {
+            let graph = downmix_graph(channels, channels, true);
+            assert!(graph.contains("loudnorm="), "{graph}");
+            assert!(!graph.contains("aformat"), "{graph}");
+        }
+    }
+
+    #[test]
+    fn no_downmix_filter_without_loudness() {
+        let graph = downmix_graph(6, 2, false);
+        assert!(!graph.contains("aformat"), "{graph}");
+        assert!(!graph.contains("loudnorm"), "{graph}");
     }
 
     fn filter_complex(args: &ArgVec) -> String {

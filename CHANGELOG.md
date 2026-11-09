@@ -110,6 +110,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Fix QSV MPEG-2 streams starting very slowly or failing to start in time due to improper segmentation
 - Fix AMF streams starting very slowly or failing to start in time due to improper segmentation
 - Fix AMF streams hanging with loudness normalization when video is not scaled or converted on the GPU
+- Loudness normalization downmixes before `loudnorm` when the output has fewer audio channels than the source
+  - The true peak limit now applies to the delivered channels, and normalizing surround sources to stereo uses less CPU
 
 ## [0.2.3] - 2026-10-23
 ### Added
