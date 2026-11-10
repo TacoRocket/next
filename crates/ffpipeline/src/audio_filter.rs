@@ -16,6 +16,9 @@ pub enum AudioFilter {
     LoudNorm {
         settings: Option<AudioLoudnessSettings>,
         sample_rate: Option<Hz>,
+        /// Channel layout to downmix to before `loudnorm`, so the true peak limit applies to
+        /// the delivered channels.
+        downmix: Option<&'static str>,
     },
 }
 
@@ -36,9 +39,13 @@ impl AudioFilter {
             AudioFilter::LoudNorm {
                 settings,
                 sample_rate,
+                downmix,
             } => settings.as_ref().map(|s| {
                 format!(
-                    "loudnorm=I={}:TP={}:LRA={},aresample={}",
+                    "{}loudnorm=I={}:TP={}:LRA={},aresample={}",
+                    downmix
+                        .map(|layout| format!("aformat=channel_layouts={layout},"))
+                        .unwrap_or_default(),
                     s.integrated_target,
                     s.true_peak,
                     s.range_target,

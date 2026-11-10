@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - Credit squeeze assumes the bundled FFmpeg concat patch. The worker logs a warning when it cannot match the FFmpeg build and skips the extra concat probe. With a custom build missing `preserve_ts`, a squeeze can fail at the start of an item. Add `concat` to `disabled_filters` to play it full-screen.
 
 ### Fixed
+- Loudness normalization downmixes before `loudnorm` when the output has fewer audio channels than the source
+  - The true peak limit now applies to the delivered channels, and normalizing surround sources to stereo uses less CPU
 - Keep 8-bit SDR VAAPI output in limited-range BT.709 across items, including inputs with missing color tags, so players can keep decoding through the transition.
 - Allow native NV12 CRT output and Experimental point chroma on positive-even active picture sizes before padding, including letterboxed and pillarboxed pictures. Existing runtime capability checks and conversion fallback remain.
 - Keep incoming HLS audio packets from overlapping the previous job's audio without moving the video timeline. Whole overlapping packets are dropped, which can leave a gap shorter than one audio packet. Mark transport continuity-counter resets on every FFmpeg job, including jobs with continuing timestamps.
