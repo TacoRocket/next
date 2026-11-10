@@ -1231,7 +1231,13 @@ impl Pipeline {
                         .into(),
                     ],
                     secondary_initial_state,
-                    secondary_source: OverlaySource::Subtitle,
+                    secondary_source: OverlaySource::Subtitle {
+                        bgra_upload_verified: {
+                            let sizes = subtitle_upload_sizes(subtitle_stream, size);
+                            let verified = &video_transcode.filter_options.vaapi_bgra_upload_sizes;
+                            !sizes.is_empty() && sizes.iter().all(|s| verified.contains(s))
+                        },
+                    },
                     location: None,
                 }));
             }
@@ -2226,6 +2232,37 @@ fn unknown_pgs_canvas_size(stream: &ProbeResultVideoStream) -> Option<FrameSize>
             height: 1080,
         },
     )
+}
+
+/// Sizes at which a burned image subtitle's BGRA frames can reach `hwupload`: the decoded canvas,
+/// or the burn size when the subtitle is scaled in software first. Empty when the frames are not
+/// BGRA or ffmpeg picks the canvas size itself.
+pub fn image_subtitle_upload_sizes(
+    input_settings: &InputSettings,
+    output_settings: &OutputSettings,
+) -> Vec<FrameSize> {
+    let Ok(video_stream) = input_settings.select_video_stream() else {
+        return Vec::new();
+    };
+    match subtitle_burn(input_settings, output_settings, video_stream) {
+        Some(SubtitleBurn::Image { stream, size, .. }) => subtitle_upload_sizes(stream, size),
+        _ => Vec::new(),
+    }
+}
+
+fn subtitle_upload_sizes(stream: &ProbeResultVideoStream, size: FrameSize) -> Vec<FrameSize> {
+    if !(stream.pix_fmt.is_empty() || PixelFormat::parse(&stream.pix_fmt) == PixelFormat::Bgra) {
+        return Vec::new();
+    }
+    let canvas = match (stream.width, stream.height) {
+        (Some(width), Some(height)) => Some(FrameSize { width, height }),
+        _ => unknown_pgs_canvas_size(stream),
+    };
+    match canvas {
+        Some(canvas) if canvas == size => vec![canvas],
+        Some(canvas) => vec![canvas, size],
+        None => Vec::new(),
+    }
 }
 
 fn subtitle_burn<'a>(
@@ -3412,6 +3449,88 @@ mod tests {
                     vec!["-canvas_size:7".to_owned(), "1920x1080".to_owned()]
                 ),
             ]
+        );
+    }
+
+    // returns (subtitle secondary chain, whole filter graph)
+    fn vaapi_image_subtitle_chains(verified: &[(u32, u32)], graphics: bool) -> (String, String) {
+        let pipeline = squeeze_pipeline_with(false, 0, false, |input, output| {
+            let mut subtitle =
+                image_subtitle_input("main.mkv", "hdmv_pgs_subtitle", Some((1920, 1080)));
+            if let crate::probe::ProbeResultStream::Video(video) =
+                &mut subtitle.probe_result.streams[0]
+            {
+                // ffprobe reports no pix_fmt for PGS; sub2video frames are BGRA
+                video.pix_fmt = String::new();
+            }
+            input.subtitle_input = Some(subtitle);
+            if graphics {
+                input.graphics_inputs.push(canvas_input(InputSource::Local(
+                    crate::input::LocalInputSource {
+                        path: "canvas.nut".to_owned(),
+                    },
+                )));
+            }
+            output.video.transcode.size = Some(FrameSize {
+                width: 1920,
+                height: 1080,
+            });
+            if let Some(HardwareAccel::Vaapi(vaapi)) = output.accel.as_mut() {
+                vaapi
+                    .capabilities
+                    .vpp_pixel_formats
+                    .insert(libva_sys::VA_FOURCC_RGBA);
+            }
+            output
+                .video
+                .transcode
+                .filter_options
+                .vaapi_bgra_upload_sizes = verified
+                .iter()
+                .map(|&(width, height)| FrameSize { width, height })
+                .collect();
+        });
+        let filter = filter_complex(&pipeline.args());
+        let subtitle = filter
+            .split(';')
+            .find(|chain| chain.starts_with("[0:7]"))
+            .unwrap()
+            .to_owned();
+        (subtitle, filter)
+    }
+
+    #[test]
+    fn verified_vaapi_image_subtitle_uploads_bgra_without_reorder() {
+        let (subtitle, _) = vaapi_image_subtitle_chains(&[(1920, 1080)], false);
+        assert_eq!(
+            subtitle,
+            "[0:7]fps=30000/1001,hwupload=derive_device=vaapi,scale_vaapi=1920:1080:format=bgra:force_original_aspect_ratio=decrease,setsar=1[v_s0]"
+        );
+    }
+
+    #[test]
+    fn unverified_vaapi_image_subtitle_keeps_rgba_reorder() {
+        for verified in [&[][..], &[(1280, 720)][..]] {
+            let (subtitle, _) = vaapi_image_subtitle_chains(verified, false);
+            assert_eq!(
+                subtitle,
+                "[0:7]fps=30000/1001,format=rgba,hwupload=derive_device=vaapi,scale_vaapi=1920:1080:format=bgra:force_original_aspect_ratio=decrease,setsar=1[v_s0]"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_bgra_upload_does_not_reach_graphics_overlays() {
+        let (subtitle, filter) = vaapi_image_subtitle_chains(&[(1920, 1080), (1280, 720)], true);
+        assert!(!subtitle.contains("format=rgba"), "{subtitle}");
+        let graphics = filter
+            .split(';')
+            .find(|chain| chain.starts_with("[1:"))
+            .unwrap();
+        // the canvas is uploaded at a verified size and still reorders
+        assert_eq!(
+            graphics,
+            "[1:0]scale=1920:1080:flags=bicubic,setsar=1,format=rgba,hwupload=derive_device=vaapi[v_s1]"
         );
     }
 

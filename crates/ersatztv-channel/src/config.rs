@@ -604,6 +604,8 @@ impl From<VideoFilterOptionsConfig> for ffpipeline::output_settings::VideoFilter
             },
             // set from the video config, not from these filter options
             custom_shader: None,
+            // found per item by the worker's VAAPI self-check
+            vaapi_bgra_upload_sizes: Vec::new(),
         }
     }
 }

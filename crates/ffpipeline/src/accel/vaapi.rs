@@ -11,7 +11,7 @@ use crate::frame_size::FrameSize;
 use crate::hw_accel::{HwAccel, HwDecoder};
 use crate::output_settings::CustomShader;
 use crate::output_settings::VideoFilterOptions;
-use crate::overlay_filter::{FramePoint, OverlayFilter, OverlayKind, OverlayKindOp};
+use crate::overlay_filter::{FramePoint, OverlayFilter, OverlayKind, OverlayKindOp, OverlaySource};
 use crate::pipeline::{
     EncodeFormat, EnvironmentVariable, FrameState, FrameSurface, HdrFormat, HwPixelFormat,
     PixelFormat, SurfaceSet, VideoFormat,
@@ -105,6 +105,81 @@ impl Vaapi {
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::LibPlacebo)
             && ffmpeg_info.has_video_filter(&KnownVideoFilter::ScaleVulkan)
     }
+}
+
+const BGRA_UPLOAD_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl Vaapi {
+    /// Whether an image subtitle could take the VAAPI overlay with a BGRA upload, so callers
+    /// only run [`Self::bgra_upload_is_exact`] when its answer can change the pipeline.
+    pub fn may_upload_bgra_subtitles(&self, ffmpeg_info: &FfmpegInfo) -> bool {
+        ffmpeg_info.has_video_filter(&KnownVideoFilter::OverlayVaapi)
+            && self.capabilities.can_overlay
+            && self.capabilities.vpp_supports_format(&PixelFormat::Rgba)
+            && self.capabilities.vpp_supports_format(&PixelFormat::Bgra)
+    }
+
+    /// BGRA upload corrupts a scattered set of sizes on some drivers, with no size rule, so ask
+    /// the device at this exact size. Any failure, timeout or finite PSNR reads as not exact.
+    pub async fn bgra_upload_is_exact(
+        &self,
+        ffmpeg_path: &std::path::Path,
+        size: FrameSize,
+    ) -> bool {
+        let mut command = ersatztv_core::process::command(ffmpeg_path);
+        command
+            .args(bgra_upload_check_args(&self.device, size))
+            .stdin(std::process::Stdio::null());
+        for env in self.envs() {
+            command.env(env.key, env.value);
+        }
+        match tokio::time::timeout(BGRA_UPLOAD_CHECK_TIMEOUT, command.output()).await {
+            Ok(Ok(output)) => {
+                output.status.success() && psnr_is_exact(&String::from_utf8_lossy(&output.stderr))
+            }
+            _ => false,
+        }
+    }
+}
+
+fn bgra_upload_check_args(device: &str, size: FrameSize) -> Vec<String> {
+    [
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-init_hw_device",
+        &format!("vaapi=va:{device}"),
+        "-filter_hw_device",
+        "va",
+        "-f",
+        "lavfi",
+        "-i",
+        // Negotiate BGRA at the source so testsrc2 preserves odd dimensions.
+        &format!(
+            "testsrc2=s={}x{}:d=0.1:r=10,format=bgra,drawbox=w=iw/4:h=ih/4:c=black@0:t=fill:replace=1",
+            size.width, size.height
+        ),
+        "-filter_complex",
+        "[0:v]split[a][b];[b]hwupload,hwdownload,format=bgra[c];[a][c]psnr",
+        "-f",
+        "null",
+        "-",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Only an infinite average in ffmpeg's psnr summary means the frames came back identical.
+fn psnr_is_exact(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .rfind(|line| line.contains(" PSNR "))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("average:"))
+        })
+        == Some("inf")
 }
 
 impl HwAccel for Vaapi {
@@ -302,7 +377,15 @@ impl HwAccel for Vaapi {
                     && self.capabilities.can_overlay
                     && self.capabilities.vpp_supports_format(&PixelFormat::Rgba) =>
             {
-                overlay_filter.with_kind(OverlayKind::Vaapi(VaapiOverlay))
+                let bgra_secondary = matches!(
+                    overlay_filter.secondary_source,
+                    OverlaySource::Subtitle {
+                        bgra_upload_verified: true
+                    }
+                ) && overlay_filter.secondary_initial_state.pixel_format
+                    == PixelFormat::Bgra
+                    && self.capabilities.vpp_supports_format(&PixelFormat::Bgra);
+                overlay_filter.with_kind(OverlayKind::Vaapi(VaapiOverlay { bgra_secondary }))
             }
             _ => overlay_filter.clone(),
         }
@@ -899,7 +982,10 @@ impl VideoFilterOp for LibplaceboShaderVaapi {
 }
 
 #[derive(Debug, Clone)]
-pub struct VaapiOverlay;
+pub struct VaapiOverlay {
+    /// Upload the secondary as BGRA; only for image subtitles whose sizes passed the self-check
+    pub(crate) bgra_secondary: bool,
+}
 
 impl OverlayKindOp for VaapiOverlay {
     fn apply_to(&self, state: &mut FrameState) {
@@ -916,7 +1002,11 @@ impl OverlayKindOp for VaapiOverlay {
 
     fn secondary_input_state(&self, current_state: &FrameState) -> FrameState {
         FrameState {
-            pixel_format: PixelFormat::Rgba,
+            pixel_format: if self.bgra_secondary {
+                PixelFormat::Bgra
+            } else {
+                PixelFormat::Rgba
+            },
             surface: FrameSurface::Vaapi,
             ..current_state.clone()
         }
@@ -1138,6 +1228,18 @@ mod tests {
                 assert_eq!(missing.as_arg(), filter.as_arg());
             }
         }
+    }
+
+    #[test]
+    fn bgra_upload_check_needs_an_infinite_psnr_average() {
+        let exact =
+            "[Parsed_psnr_5 @ 0x5581] PSNR r:inf g:inf b:inf a:inf average:inf min:inf max:inf\n";
+        let lossy = "[Parsed_psnr_5 @ 0x5581] PSNR r:inf g:inf b:31.20 a:inf average:37.22 min:37.22 max:37.22\n";
+        assert!(psnr_is_exact(exact));
+        assert!(!psnr_is_exact(lossy));
+        assert!(!psnr_is_exact(
+            "Device creation failed: -22.\nError parsing global options\n"
+        ));
     }
 
     #[test]

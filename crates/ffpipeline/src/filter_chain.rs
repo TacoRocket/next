@@ -1028,7 +1028,7 @@ impl FilterChain {
                     }
                     PipelineFilter::Overlay(overlay) => {
                         let sec_label = match overlay.secondary_source {
-                            OverlaySource::Subtitle => subtitle_label,
+                            OverlaySource::Subtitle { .. } => subtitle_label,
                             OverlaySource::Graphics(layer_index) => {
                                 graphics_labels.get(layer_index).and_then(Option::as_ref)
                             }
@@ -1072,7 +1072,7 @@ impl FilterChain {
                             // at end of file sub2video flushes one frame stamped far in the
                             // future, and fps fills every slot up to it, so the subtitle side
                             // never ends. It outlasts the video, so end with the video instead.
-                            if matches!(overlay.secondary_source, OverlaySource::Subtitle)
+                            if matches!(overlay.secondary_source, OverlaySource::Subtitle { .. })
                                 && overlay
                                     .secondary
                                     .iter()

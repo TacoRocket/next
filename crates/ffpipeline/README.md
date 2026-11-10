@@ -111,6 +111,12 @@ VAAPI upload/download round trip. `accel/vaapi.rs` selects this path only when
 RGBA VPP support is reported; otherwise the existing software overlay remains
 in use. The conversion preserves alpha, requested dimensions and placement.
 
+Image subtitles are the one exception. Corruption hits a scattered set of BGRA sizes with no
+size rule, so the channel worker checks a BGRA upload/download round trip on the device at each
+size the subtitle frames can be uploaded at, once per worker, and passes the exact sizes in
+`VideoFilterOptions::vaapi_bgra_upload_sizes`. When every such size is listed, the subtitle is
+uploaded as BGRA without the reorder; otherwise, and for every other overlay, RGBA is used.
+
 ## VAAPI scaling and CRT sampling
 
 `accel/vaapi.rs` resolves the optional fork channel field

@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 - Credit squeeze assumes the bundled FFmpeg concat patch. The worker logs a warning when it cannot match the FFmpeg build and skips the extra concat probe. With a custom build missing `preserve_ts`, a squeeze can fail at the start of an item. Add `concat` to `disabled_filters` to play it full-screen.
+- On VAAPI, burned image subtitles (e.g. PGS) upload their BGRA frames without a software reorder to RGBA when the worker's one-time check finds a BGRA upload exact at that subtitle size on the configured device. The worker runs the check with `ffmpeg_path` on the first item that needs each size; failed or unavailable checks keep the existing RGBA path. Watermarks and graphics overlays are unchanged.
 
 ### Fixed
 - Loudness normalization downmixes before `loudnorm` when the output has fewer audio channels than the source

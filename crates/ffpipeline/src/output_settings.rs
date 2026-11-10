@@ -92,6 +92,9 @@ pub struct VideoFilterOptions {
     pub yadif_cuda: YadifCudaOptions,
     /// Drawn while scaling to the output picture; see [`CustomShader`].
     pub custom_shader: Option<CustomShader>,
+    /// Sizes at which the caller found a BGRA upload/download round trip on the VAAPI device
+    /// bit-exact. Image subtitles uploaded only at these sizes skip the RGBA reorder.
+    pub vaapi_bgra_upload_sizes: Vec<FrameSize>,
 }
 
 /// A libplacebo user shader (mpv-style `//!HOOK` blocks). It is passed inline as
