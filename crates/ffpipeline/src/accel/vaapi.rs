@@ -25,10 +25,13 @@ use crate::video_filter::{
 
 // FrameState collapses DV profiles other than 5 into PQ/HDR10 and drops range.
 // Select against the original probe metadata before that information is lost.
+// Dolby Vision is allowed only for profiles 7 and 8: ffmpeg decodes their HDR10 base layer, which
+// the LUT expects. The PQ check below already drops 8.4 (HLG) and 8.2 (SDR). Profile 5 has no
+// HDR10 base layer, and Dolby Vision with an unknown profile cannot be shown to have one.
 pub(crate) fn hdr10_lut_eligible(video: &ProbeResultVideoStream) -> bool {
     let color = &video.color_params;
     PixelFormat::parse(&video.pix_fmt).bit_depth() == 10
-        && !video.is_dolby_vision()
+        && (!video.is_dolby_vision() || matches!(video.dv_profile, Some(7 | 8)))
         && color.color_transfer.as_deref() == Some("smpte2084")
         && color.color_primaries.as_deref() == Some("bt2020")
         && color.color_space.as_deref() == Some("bt2020nc")

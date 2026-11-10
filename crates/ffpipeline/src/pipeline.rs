@@ -2566,7 +2566,7 @@ mod tests {
     }
 
     #[test]
-    fn hdr10_lut_matches_legacy_input_selection() {
+    fn hdr10_lut_input_selection() {
         let input = hdr10_input();
         let crate::probe::ProbeResultStream::Video(video) =
             &input.video_input.probe_result.streams[0]
@@ -2574,11 +2574,23 @@ mod tests {
             panic!("HDR fixture must contain video");
         };
         assert!(crate::accel::vaapi::hdr10_lut_eligible(video));
-        for profile in [5, 7, 8] {
+        for (profile, eligible) in [(4, false), (5, false), (7, true), (8, true), (9, false)] {
             let mut other = video.clone();
             other.dv_profile = Some(profile);
-            assert!(!crate::accel::vaapi::hdr10_lut_eligible(&other));
+            assert_eq!(
+                crate::accel::vaapi::hdr10_lut_eligible(&other),
+                eligible,
+                "{profile}"
+            );
         }
+        let mut hlg = video.clone();
+        hlg.dv_profile = Some(8);
+        hlg.color_params.color_transfer = Some("arib-std-b67".to_owned());
+        assert!(!crate::accel::vaapi::hdr10_lut_eligible(&hlg));
+        let mut full_range = video.clone();
+        full_range.dv_profile = Some(8);
+        full_range.color_params.color_range = Some("pc".to_owned());
+        assert!(!crate::accel::vaapi::hdr10_lut_eligible(&full_range));
         for (codec, profile) in [
             ("dvhe", "Main 10"),
             ("dvh1", "Main 10"),
@@ -2609,6 +2621,67 @@ mod tests {
             }
             assert!(!crate::accel::vaapi::hdr10_lut_eligible(&other), "{field}");
         }
+    }
+
+    fn dolby_vision_lut_args(dv_profile: u32) -> String {
+        use crate::filter_chain::tests::{
+            ffmpeg_info_with_libplacebo, vaapi_accel_with_libplacebo,
+        };
+        let mut input = hdr10_input();
+        for probe in [
+            &mut input.video_input.probe_result,
+            &mut input.audio_input.probe_result,
+        ] {
+            if let crate::probe::ProbeResultStream::Video(video) = &mut probe.streams[0] {
+                video.profile = "Main 10".to_owned();
+                video.dv_profile = Some(dv_profile);
+            }
+        }
+        let mut vaapi = vaapi_accel_with_libplacebo(true);
+        vaapi.capabilities.supported.extend([
+            (
+                libva_sys::VA_PROFILE_HEVC_MAIN10,
+                libva_sys::VA_ENTRYPOINT_VLD,
+            ),
+            (
+                libva_sys::VA_PROFILE_H264_MAIN,
+                libva_sys::VA_ENTRYPOINT_ENC_SLICE,
+            ),
+        ]);
+        vaapi
+            .capabilities
+            .vpp_pixel_formats
+            .extend([libva_sys::VA_FOURCC_NV12, libva_sys::VA_FOURCC_P010]);
+        let mut output = OutputSettings {
+            accel: Some(HardwareAccel::Vaapi(vaapi)),
+            ..stereo_output()
+        };
+        output.video.transcode.hdr_vaapi_lut = true;
+        output.video.transcode.bit_depth = 8;
+        let mut ffmpeg_info = ffmpeg_info_with_libplacebo();
+        ffmpeg_info
+            .hwaccels
+            .insert(crate::ffmpeg_info::KnownHardwareAccel::Vaapi.to_string());
+        ffmpeg_info.video_filters.extend(
+            [
+                KnownVideoFilter::ScaleVaapi,
+                KnownVideoFilter::TonemapVaapiLut,
+            ]
+            .map(|f| f.to_string()),
+        );
+        let mut pipeline = Pipeline::full(&ffmpeg_info, input, output).unwrap();
+        pipeline.optimize();
+        pipeline.args().join(" ")
+    }
+
+    #[test]
+    fn dolby_vision_hdr10_base_uses_the_vaapi_lut() {
+        let args = dolby_vision_lut_args(8);
+        assert!(args.contains("tonemap_vaapi_lut"), "{args}");
+        assert!(!args.contains("libplacebo"), "{args}");
+
+        let args = dolby_vision_lut_args(5);
+        assert!(!args.contains("tonemap_vaapi_lut"), "{args}");
     }
 
     fn degradation_codes(pipeline: &Pipeline) -> Vec<DegradationCode> {
