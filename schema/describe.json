@@ -255,6 +255,16 @@
       "title": "OutputFiles",
       "type": "object",
       "properties": {
+        "fmp4_init_template": {
+          "description": "printf-style init file name when `hls.segment_type` is `fmp4`; each ffmpeg job writes its\nown, numbered separately from segments. Fork worker only.",
+          "type": "string",
+          "default": ""
+        },
+        "fmp4_segment_template": {
+          "description": "printf-style segment file name when `hls.segment_type` is `fmp4`. Fork worker only.",
+          "type": "string",
+          "default": ""
+        },
         "heartbeat": {
           "description": "Touched by the integrator while it still wants the channel; the channel stops when it goes\nstale.",
           "type": "string"
@@ -327,6 +337,14 @@
         "audio_formats": {
           "description": "Accepted `normalization.audio.format` values.",
           "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hls_segment_types": {
+          "description": "Accepted `hls.segment_type` values. Fork worker only.",
+          "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }

@@ -53,25 +53,56 @@ impl PtsScanner {
                     ChannelError::PtsScannerPathNotUtf8(p.to_string_lossy().into_owned())
                 })?;
 
-            let output = process::command(&self.ffprobe_path)
-                .args([
-                    "-v",
-                    "-0",
-                    "-show_entries",
-                    "packet=codec_type,pts_time,duration_time",
-                    "-of",
-                    "compact=p=0",
-                    &path,
-                ])
-                .output()
-                .await
-                .io_context("run ffprobe on the last segment", &path)?;
-
-            pts_time = packet_ends(&String::from_utf8_lossy(&output.stdout));
+            pts_time = self.probe_ends(&path).await?;
         }
 
         Ok(pts_time)
     }
+
+    /// `last_segment` pairs the newest fMP4 segment with the init its ffmpeg job wrote; a
+    /// fragment alone has no track headers, so ffprobe reads the two as one file.
+    pub async fn get_last_fmp4_pts(
+        &self,
+        last_segment: Option<(PathBuf, Option<PathBuf>)>,
+    ) -> Result<PtsTime, ChannelError> {
+        let Some((segment, init)) = last_segment else {
+            return Ok(PtsTime::default());
+        };
+        let Some(init) = init else {
+            return Err(ChannelError::PtsScannerMissingInit(
+                segment.to_string_lossy().into_owned(),
+            ));
+        };
+        let utf8 = |path: PathBuf| {
+            path.into_os_string()
+                .into_string()
+                .map_err(|p| ChannelError::PtsScannerPathNotUtf8(p.to_string_lossy().into_owned()))
+        };
+        self.probe_ends(&fmp4_probe_input(&utf8(init)?, &utf8(segment)?))
+            .await
+    }
+
+    async fn probe_ends(&self, input: &str) -> Result<PtsTime, ChannelError> {
+        let output = process::command(&self.ffprobe_path)
+            .args([
+                "-v",
+                "-0",
+                "-show_entries",
+                "packet=codec_type,pts_time,duration_time",
+                "-of",
+                "compact=p=0",
+                input,
+            ])
+            .output()
+            .await
+            .io_context("run ffprobe on the last segment", input)?;
+
+        Ok(packet_ends(&String::from_utf8_lossy(&output.stdout)))
+    }
+}
+
+fn fmp4_probe_input(init: &str, segment: &str) -> String {
+    format!("concat:{init}|{segment}")
 }
 
 fn packet_ends(output: &str) -> PtsTime {
@@ -108,6 +139,30 @@ fn packet_ends(output: &str) -> PtsTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn fmp4_probe_reads_the_segment_after_its_own_init() {
+        assert_eq!(
+            fmp4_probe_input("/out/init000001.mp4", "/out/live000007.m4s"),
+            "concat:/out/init000001.mp4|/out/live000007.m4s"
+        );
+
+        let scanner = PtsScanner {
+            output_folder: PathBuf::from("/out"),
+            ffprobe_path: PathBuf::from("ffprobe-not-run"),
+        };
+        assert_eq!(
+            scanner.get_last_fmp4_pts(None).await.unwrap().duration,
+            Duration::ZERO
+        );
+        // never guesses an init for a segment it can't pair
+        assert!(matches!(
+            scanner
+                .get_last_fmp4_pts(Some((PathBuf::from("/out/live000007.m4s"), None)))
+                .await,
+            Err(ChannelError::PtsScannerMissingInit(_))
+        ));
+    }
 
     #[test]
     fn audio_tail_does_not_move_the_video_anchor() {

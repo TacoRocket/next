@@ -801,6 +801,14 @@ impl Pipeline {
             if video_stream.codec == "h264" {
                 copy_output_options.push(OutputOption::H264CopyParameterSets);
             }
+
+            if final_output_settings.format.is_fmp4() && video_stream.codec == "hevc" {
+                copy_output_options.push(OutputOption::VideoTag(hevc_copy_tag(
+                    video_stream.dv_profile,
+                )));
+                // without it ffmpeg drops the Dolby Vision box and writes plain HEVC
+                copy_output_options.push(OutputOption::StrictUnofficial);
+            }
         }
 
         let video_decoder = VideoDecoder::new(
@@ -956,6 +964,15 @@ impl Pipeline {
         {
             let gop_options = accel.encoder_gop_options(codec, gop_frames(&frame_rate));
             codec.options.extend(gop_options);
+        }
+
+        // players reject MP4's default hev1 tag; most encoders already set hvc1
+        if let VideoEncoder::Encode(codec) = &mut video_encoder
+            && final_output_settings.format.is_fmp4()
+            && video_transcode.format == EncodeFormat::Hevc
+            && !codec.options.iter().any(|o| o == "-tag:v")
+        {
+            codec.options.extend(args!["-tag:v", "hvc1"]);
         }
 
         let output_context = OutputContext {
@@ -2324,6 +2341,7 @@ fn copy_decisions(
                     image_subtitle: matches!(subtitle_burn, Some(SubtitleBurn::Image { .. })),
                     burned_subtitle: matches!(subtitle_burn, Some(SubtitleBurn::Text { .. })),
                     target_frame_rate: output_settings.frame_rate.as_ref(),
+                    fmp4: output_settings.format.is_fmp4(),
                 },
             )
         }),
@@ -2344,6 +2362,15 @@ fn copy_decisions(
                 decision
             }
         }),
+    }
+}
+
+/// `dvh1` for Dolby Vision profiles below 8 (5 and 7 in practice). Profile 8 and plain HEVC
+/// stay `hvc1`, so players without Dolby Vision still play profile 8 as HDR10.
+fn hevc_copy_tag(dv_profile: Option<u32>) -> &'static str {
+    match dv_profile {
+        Some(profile) if profile < 8 => "dvh1",
+        _ => "hvc1",
     }
 }
 
@@ -2612,6 +2639,147 @@ mod tests {
             }
         }
         input
+    }
+
+    fn fmp4_output() -> OutputSettings {
+        let mut output = stereo_output();
+        output.format = crate::output_format::OutputFormat::HlsFmp4 {
+            playlist: "out.m3u8".to_owned(),
+            segment_template: "live%06d.m4s".to_owned(),
+            init_filename: "init000003.mp4".to_owned(),
+            troubleshoot: false,
+        };
+        output
+    }
+
+    fn pipeline_args(input: InputSettings, output: OutputSettings) -> (Vec<String>, Pipeline) {
+        let mut pipeline = Pipeline::full(&FfmpegInfo::default(), input, output).unwrap();
+        pipeline.optimize();
+        let args = pipeline.args().iter().map(|a| a.to_string()).collect();
+        (args, pipeline)
+    }
+
+    fn has(args: &[String], expected: &[&str]) -> bool {
+        args.windows(expected.len()).any(|w| w == expected)
+    }
+
+    fn hevc_copy(output: OutputSettings, dv_profile: Option<u32>) -> (Vec<String>, Pipeline) {
+        let mut input = hdr10_input();
+        if let crate::probe::ProbeResultStream::Video(video) =
+            &mut input.video_input.probe_result.streams[0]
+        {
+            video.dv_profile = dv_profile;
+        }
+        let mut output = output;
+        output.video.copy = Some(crate::output_settings::CopyPolicy::default());
+        pipeline_args(input, output)
+    }
+
+    #[test]
+    fn fmp4_hls_names_the_job_init_without_mpegts_flags() {
+        let (args, _) = pipeline_args(multichannel_ac3_input("main.mkv"), fmp4_output());
+        assert!(has(
+            &args,
+            &[
+                "-hls_segment_filename",
+                "live%06d.m4s",
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                "init000003.mp4",
+            ]
+        ));
+        assert!(!args.iter().any(|a| a == "-hls_segment_options"));
+        assert!(!args.iter().any(|a| a == "-strict"));
+        // h264 keeps its default avc1 tag
+        assert!(!args.iter().any(|a| a == "-tag:v"));
+    }
+
+    #[test]
+    fn mpegts_hls_has_no_fmp4_options() {
+        let (args, _) = pipeline_args(multichannel_ac3_input("main.mkv"), stereo_output());
+        assert!(has(&args, &["-hls_segment_type", "mpegts", "-hls_flags"]));
+        assert!(!args.iter().any(|a| a == "-hls_fmp4_init_filename"));
+
+        let (args, pipeline) = hevc_copy(stereo_output(), Some(8));
+        assert_eq!(pipeline.copy_decisions().video, Some(CopyDecision::Copy));
+        assert!(!args.iter().any(|a| a == "-tag:v" || a == "-strict"));
+    }
+
+    #[test]
+    fn fmp4_hevc_copy_tags_dolby_vision_below_profile_8() {
+        for (profile, tag) in [
+            (None, "hvc1"),
+            (Some(5), "dvh1"),
+            (Some(7), "dvh1"),
+            (Some(8), "hvc1"),
+        ] {
+            let (args, pipeline) = hevc_copy(fmp4_output(), profile);
+            assert_eq!(
+                pipeline.copy_decisions().video,
+                Some(CopyDecision::Copy),
+                "{profile:?}"
+            );
+            assert!(has(&args, &["-tag:v", tag]), "{profile:?} {args:?}");
+            assert_eq!(args.iter().filter(|a| *a == "-tag:v").count(), 1);
+            assert!(has(&args, &["-strict", "unofficial"]), "{profile:?}");
+        }
+    }
+
+    #[test]
+    fn dolby_vision_5_copies_only_into_fmp4() {
+        let (_, pipeline) = hevc_copy(stereo_output(), Some(5));
+        assert_eq!(
+            pipeline.copy_decisions().video,
+            Some(CopyDecision::Transcode(vec![CopyBlocker::DolbyVision5]))
+        );
+        let (_, pipeline) = hevc_copy(fmp4_output(), Some(5));
+        assert_eq!(pipeline.copy_decisions().video, Some(CopyDecision::Copy));
+    }
+
+    #[test]
+    fn fmp4_hevc_encode_gets_hvc1_once() {
+        use crate::capabilities::videotoolbox::VideoToolboxCapabilities;
+
+        // libx265 sets hvc1 itself; hevc_videotoolbox does not
+        for videotoolbox in [false, true] {
+            for fmp4 in [false, true] {
+                let mut output = if fmp4 { fmp4_output() } else { stereo_output() };
+                output.video.transcode.format = EncodeFormat::Hevc;
+                let mut ffmpeg_info = FfmpegInfo::default();
+                if videotoolbox {
+                    output.accel = Some(HardwareAccel::VideoToolbox(
+                        crate::accel::video_toolbox::VideoToolbox {
+                            capabilities: VideoToolboxCapabilities {
+                                supported_decoders: Default::default(),
+                                supported_interlaced_decoders: Default::default(),
+                                supported_encoders: [(VideoFormat::Hevc, 8)].into(),
+                            },
+                        },
+                    ));
+                    ffmpeg_info.hwaccels =
+                        [crate::ffmpeg_info::KnownHardwareAccel::VideoToolbox.to_string()].into();
+                }
+                let mut pipeline =
+                    Pipeline::full(&ffmpeg_info, multichannel_ac3_input("main.mkv"), output)
+                        .unwrap();
+                pipeline.optimize();
+                let args: Vec<String> = pipeline.args().iter().map(|a| a.to_string()).collect();
+                assert_eq!(
+                    args.iter().any(|a| a == "hevc_videotoolbox"),
+                    videotoolbox,
+                    "{args:?}"
+                );
+                let tags = args.iter().filter(|a| *a == "-tag:v").count();
+                if fmp4 || !videotoolbox {
+                    assert!(has(&args, &["-tag:v", "hvc1"]), "{args:?}");
+                    assert_eq!(tags, 1, "{args:?}");
+                } else {
+                    assert_eq!(tags, 0, "{args:?}");
+                }
+                assert!(!args.iter().any(|a| a == "-strict"));
+            }
+        }
     }
 
     #[test]
