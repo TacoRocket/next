@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ersatztv_channel::config::{ChannelConfig, NormalizationConfig, StreamMode};
+use ersatztv_channel::config::{ChannelConfig, HlsSegmentType, NormalizationConfig, StreamMode};
 use ersatztv_channel::dynamic;
 use ersatztv_channel::error::{ChannelError, IoContext};
 use ersatztv_core::{
-    FFMPEG_PLAYLIST_FILE_NAME, PLAYLIST_FILE_NAME, READY_FILE_NAME, SEGMENT_FILE_TEMPLATE,
-    SUBTITLE_PLAYLIST_FILE_NAME, empty_folder,
+    FFMPEG_PLAYLIST_FILE_NAME, FMP4_SEGMENT_FILE_TEMPLATE, PLAYLIST_FILE_NAME, READY_FILE_NAME,
+    SEGMENT_FILE_TEMPLATE, SUBTITLE_PLAYLIST_FILE_NAME, empty_folder,
 };
 use ersatztv_playout::playout::{
     AudioHint, GraphicsLayer, GraphicsLayerKind, PeriodicClock, PlayoutItem, PlayoutItemSource,
@@ -125,6 +125,9 @@ pub struct ChannelSession {
 
     output_file: String,
     output_segment_template: String,
+    fmp4: bool,
+    // numbers each ffmpeg job's fMP4 init file
+    next_init_index: u64,
 
     start_time_offset: time::Duration,
     state: ChannelSessionState,
@@ -186,12 +189,18 @@ impl ChannelSession {
                 path: p.to_string_lossy().into_owned(),
             })?;
 
+        let fmp4 = channel_config.hls.segment_type == HlsSegmentType::Fmp4;
+        let segment_file_template = if fmp4 {
+            FMP4_SEGMENT_FILE_TEMPLATE
+        } else {
+            SEGMENT_FILE_TEMPLATE
+        };
         let output_segment_template = output_folder
-            .join(SEGMENT_FILE_TEMPLATE)
+            .join(segment_file_template)
             .into_os_string()
             .into_string()
             .map_err(|p| ChannelError::OutputPathNotUtf8 {
-                file: SEGMENT_FILE_TEMPLATE,
+                file: segment_file_template,
                 path: p.to_string_lossy().into_owned(),
             })?;
 
@@ -209,6 +218,11 @@ impl ChannelSession {
                 ffmpeg_playlist_file: ffmpeg_output_file.to_owned(),
             },
         );
+        let playlist_manager = if fmp4 {
+            playlist_manager.fmp4()
+        } else {
+            playlist_manager
+        };
 
         let playlist_manager = Arc::new(Mutex::new(playlist_manager));
 
@@ -255,6 +269,8 @@ impl ChannelSession {
             ready_file,
             output_file: ffmpeg_output_file,
             output_segment_template,
+            fmp4,
+            next_init_index: 0,
             start_time_offset,
             state: ChannelSessionState::SeekAndWorkAhead,
             timeout_notify: Arc::new(tokio::sync::Notify::new()),
@@ -460,7 +476,7 @@ impl ChannelSession {
 
         // get last pts offset
         let mut pts_time: Option<PtsTime> = None;
-        match self.pts_scanner.get_last_pts().await {
+        match self.scan_last_pts().await {
             Ok(scanned_pts_time) => pts_time = Some(scanned_pts_time),
             Err(e) => log::debug!("{e}"),
         }
@@ -632,6 +648,8 @@ impl ChannelSession {
                 .and_then(|s| self.playout_source_to_input_source(s.clone()).ok())
         };
 
+        let init_filename = self.fmp4.then(|| self.next_init_filename());
+
         let session: &ChannelSession = self;
         let audio_fut = session.resolve_probe(&audio_source, &audio_input_source);
         let video_fut = async {
@@ -722,10 +740,18 @@ impl ChannelSession {
             } else {
                 self.unavailable_accel.clone()
             },
-            format: ffpipeline::output_format::OutputFormat::Hls {
-                playlist: self.output_file.clone(),
-                segment_template: self.output_segment_template.clone(),
-                troubleshoot,
+            format: match &init_filename {
+                None => ffpipeline::output_format::OutputFormat::Hls {
+                    playlist: self.output_file.clone(),
+                    segment_template: self.output_segment_template.clone(),
+                    troubleshoot,
+                },
+                Some(init_filename) => ffpipeline::output_format::OutputFormat::HlsFmp4 {
+                    playlist: self.output_file.clone(),
+                    segment_template: self.output_segment_template.clone(),
+                    init_filename: init_filename.clone(),
+                    troubleshoot,
+                },
             },
             pts_offset: pts_time.map(|pts| PtsOffset {
                 duration: pts.duration,
@@ -1091,10 +1117,11 @@ impl ChannelSession {
         self.playlist_manager
             .lock()
             .await
-            .before_new_pipeline(
+            .before_new_pipeline_with_init(
                 self.transcoded_until - self.start_time_offset,
                 pts_offset,
                 subtitle_source,
+                init_filename,
             )
             .await?;
 
@@ -1733,9 +1760,36 @@ impl ChannelSession {
     }
 
     async fn last_pts_time(&self, fallback: Option<PtsTime>) -> Option<PtsTime> {
-        match self.pts_scanner.get_last_pts().await {
+        match self.scan_last_pts().await {
             Ok(scanned_pts_time) => Some(scanned_pts_time),
             Err(_) => fallback,
+        }
+    }
+
+    /// An fMP4 segment can only be read with the init its own ffmpeg job wrote, so the playlist
+    /// manager names the pair rather than the scanner guessing it from the folder.
+    async fn scan_last_pts(&self) -> Result<PtsTime, ChannelError> {
+        if !self.fmp4 {
+            return self.pts_scanner.get_last_pts().await;
+        }
+        let last_segment = {
+            let mut playlist_manager = self.playlist_manager.lock().await;
+            playlist_manager.update().await?;
+            playlist_manager.last_segment()
+        };
+        self.pts_scanner.get_last_fmp4_pts(last_segment).await
+    }
+
+    /// A bare name that no file in the output folder has, so no published segment's init is
+    /// overwritten even when the folder was not emptied at start.
+    fn next_init_filename(&mut self) -> String {
+        let output_folder = self.channel_config.expanded_output_folder().to_owned();
+        loop {
+            let name = format!("init{:06}.mp4", self.next_init_index);
+            self.next_init_index += 1;
+            if !output_folder.join(&name).exists() {
+                return name;
+            }
         }
     }
 

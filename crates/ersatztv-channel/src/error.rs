@@ -86,6 +86,9 @@ pub enum ChannelError {
     #[error("last segment path is not valid UTF-8: {0}")]
     PtsScannerPathNotUtf8(String),
 
+    #[error("no init file is known for the last fMP4 segment {0}")]
+    PtsScannerMissingInit(String),
+
     #[error("channel {0} terminated after idle timeout")]
     IdleTimeout(String),
 

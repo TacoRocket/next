@@ -1,13 +1,15 @@
 use ersatztv_core::{
-    HEARTBEAT_FILE_NAME, PLAYLIST_FILE_NAME, READY_FILE_NAME, SEGMENT_FILE_TEMPLATE,
-    SUBTITLE_PLAYLIST_FILE_NAME, VersionedSchema,
+    FMP4_INIT_FILE_TEMPLATE, FMP4_SEGMENT_FILE_TEMPLATE, HEARTBEAT_FILE_NAME, PLAYLIST_FILE_NAME,
+    READY_FILE_NAME, SEGMENT_FILE_TEMPLATE, SUBTITLE_PLAYLIST_FILE_NAME, VersionedSchema,
 };
 use ffpipeline::pipeline::{KEYFRAME_INTERVAL_SECONDS, SEGMENT_SECONDS};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{AudioCopyFormat, AudioFormat, HardwareAccel, SubtitleMode, VideoFormat};
+use crate::config::{
+    AudioCopyFormat, AudioFormat, HardwareAccel, HlsSegmentType, SubtitleMode, VideoFormat,
+};
 use crate::dynamic::CALLBACK_HEADERS;
 use crate::runtime_capability::RuntimeCapability;
 
@@ -92,6 +94,13 @@ pub struct OutputFiles {
     pub subtitle_playlist: String,
     /// printf-style segment file name, e.g. `live%06d.ts`.
     pub segment_template: String,
+    /// printf-style segment file name when `hls.segment_type` is `fmp4`. Fork worker only.
+    #[serde(default)]
+    pub fmp4_segment_template: String,
+    /// printf-style init file name when `hls.segment_type` is `fmp4`; each ffmpeg job writes its
+    /// own, numbered separately from segments. Fork worker only.
+    #[serde(default)]
+    pub fmp4_init_template: String,
     /// Created once the playlist is ready to serve.
     pub ready: String,
     /// Touched by the integrator while it still wants the channel; the channel stops when it goes
@@ -112,6 +121,9 @@ pub struct SchemaCapability {
     pub accels: Vec<String>,
     /// Accepted `normalization.subtitle.mode` values.
     pub subtitle_modes: Vec<String>,
+    /// Accepted `hls.segment_type` values. Fork worker only.
+    #[serde(default)]
+    pub hls_segment_types: Vec<String>,
 }
 
 impl Describe {
@@ -129,6 +141,8 @@ impl Describe {
                     playlist: PLAYLIST_FILE_NAME.to_string(),
                     subtitle_playlist: SUBTITLE_PLAYLIST_FILE_NAME.to_string(),
                     segment_template: SEGMENT_FILE_TEMPLATE.to_string(),
+                    fmp4_segment_template: FMP4_SEGMENT_FILE_TEMPLATE.to_string(),
+                    fmp4_init_template: FMP4_INIT_FILE_TEMPLATE.to_string(),
                     ready: READY_FILE_NAME.to_string(),
                     heartbeat: HEARTBEAT_FILE_NAME.to_string(),
                 },
@@ -142,6 +156,7 @@ impl Describe {
                 audio_copy_formats: enum_values::<AudioCopyFormat>(),
                 accels: enum_values::<HardwareAccel>(),
                 subtitle_modes: enum_values::<SubtitleMode>(),
+                hls_segment_types: enum_values::<HlsSegmentType>(),
             },
             runtime_capability: None,
         }
@@ -215,5 +230,10 @@ mod tests {
             "vulkan",
         ]);
         assert_round_trips::<SubtitleMode>(&["burn", "convert"]);
+    }
+
+    #[test]
+    fn hls_segment_types_match_config() {
+        assert_round_trips::<HlsSegmentType>(&["mpegts", "fmp4"]);
     }
 }

@@ -265,9 +265,19 @@ async fn fix_content_types(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let is_m3u8 = request.uri().path().ends_with(".m3u8");
+    let path = request.uri().path();
+    let content_type = if path.ends_with(".m3u8") {
+        Some("application/vnd.apple.mpegurl")
+    } else if path.ends_with(".m4s") || path.ends_with(".mp4") {
+        // fMP4 segments and init files
+        Some("video/mp4")
+    } else {
+        None
+    };
     let mut response = next.run(request).await;
-    if is_m3u8 && let Ok(value) = "application/vnd.apple.mpegurl".parse() {
+    if let Some(content_type) = content_type
+        && let Ok(value) = content_type.parse()
+    {
         response
             .headers_mut()
             .insert(axum::http::header::CONTENT_TYPE, value);
@@ -399,7 +409,11 @@ async fn session_middleware(
 ) -> axum::response::Response {
     // touch heartbeat file for channel
     let path = request.uri().path();
-    if path.ends_with(".ts") || path.ends_with(".m3u8") {
+    if path.ends_with(".ts")
+        || path.ends_with(".m4s")
+        || path.ends_with(".mp4")
+        || path.ends_with(".m3u8")
+    {
         let split: Vec<&str> = request.uri().path().split('/').collect();
         let active = state.active.lock().await;
         if active.contains_key(split[1]) {

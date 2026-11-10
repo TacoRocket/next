@@ -36,6 +36,7 @@ pub enum CopyBlocker {
     CreditSqueezeAudio,
     ImageSubtitle,
     BurnedSubtitle,
+    /// Profile 5 plays in wrong colours from MPEG-TS; fMP4 segments copy it.
     DolbyVision5,
     GeneratedSource,
     /// AVI packets have no pts, so copied timing is wrong; AAC copy from AVI to mpegts fails
@@ -110,6 +111,8 @@ pub(crate) struct VideoCopyContext<'a> {
     pub(crate) image_subtitle: bool,
     pub(crate) burned_subtitle: bool,
     pub(crate) target_frame_rate: Option<&'a FrameRate>,
+    /// fMP4 carries the Dolby Vision configuration that MPEG-TS loses.
+    pub(crate) fmp4: bool,
 }
 
 pub(crate) fn video_copy_decision(
@@ -133,7 +136,10 @@ pub(crate) fn video_copy_decision(
 
     for (blocked, blocker) in [
         (context.is_still_image, CopyBlocker::StillImage),
-        (stream.dv_profile == Some(5), CopyBlocker::DolbyVision5),
+        (
+            stream.dv_profile == Some(5) && !context.fmp4,
+            CopyBlocker::DolbyVision5,
+        ),
         (context.has_graphics, CopyBlocker::GraphicsLayers),
         (context.image_subtitle, CopyBlocker::ImageSubtitle),
         (context.burned_subtitle, CopyBlocker::BurnedSubtitle),
@@ -417,6 +423,7 @@ mod tests {
             image_subtitle: true,
             burned_subtitle: true,
             target_frame_rate: None,
+            fmp4: false,
         };
         assert_eq!(
             video_copy_decision(
@@ -434,6 +441,30 @@ mod tests {
                 CopyBlocker::BurnedSubtitle,
             ])
         );
+    }
+
+    #[test]
+    fn dv5_copies_only_into_fmp4() {
+        let stream = ProbeResultVideoStream {
+            dv_profile: Some(5),
+            ..video("hevc")
+        };
+        let decide = |fmp4| {
+            video_copy_decision(
+                &CopyPolicy::default(),
+                &local("matroska"),
+                &stream,
+                &VideoCopyContext {
+                    fmp4,
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            decide(false),
+            CopyDecision::Transcode(vec![CopyBlocker::DolbyVision5])
+        );
+        assert_eq!(decide(true), CopyDecision::Copy);
     }
 
     #[test]

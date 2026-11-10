@@ -65,6 +65,10 @@ pub struct PlaylistManager {
 
     segments: VecDeque<Segment>,
     discontinuity_before: HashSet<String>,
+    // fMP4 only: the init file each segment was written with, and the running job's init
+    segment_inits: HashMap<String, String>,
+    current_init: Option<String>,
+    segment_extension: &'static str,
     media_sequence: u64,
     last_served_media_sequence: u64,
     discontinuity_sequence: u64,
@@ -117,6 +121,9 @@ impl PlaylistManager {
 
             segments: VecDeque::new(),
             discontinuity_before: HashSet::new(),
+            segment_inits: HashMap::new(),
+            current_init: None,
+            segment_extension: ".ts",
             media_sequence: 0,
             last_served_media_sequence: 0,
             discontinuity_sequence: 0,
@@ -135,6 +142,30 @@ impl PlaylistManager {
         }
     }
 
+    /// Segments are fragmented MP4 (`.m4s`), each ffmpeg job with its own init file.
+    pub fn fmp4(self) -> Self {
+        PlaylistManager {
+            segment_extension: ".m4s",
+            ..self
+        }
+    }
+
+    fn is_fmp4(&self) -> bool {
+        self.segment_extension == ".m4s"
+    }
+
+    /// The newest published segment and, for fMP4, the init file the same ffmpeg job wrote.
+    pub fn last_segment(&self) -> Option<(PathBuf, Option<PathBuf>)> {
+        self.segments.back().map(|segment| {
+            (
+                self.output_folder.join(&segment.path),
+                self.segment_inits
+                    .get(&segment.path)
+                    .map(|init| self.output_folder.join(init)),
+            )
+        })
+    }
+
     pub fn timeout(&self) -> &bool {
         &self.timeout
     }
@@ -147,13 +178,44 @@ impl PlaylistManager {
         &self.ready
     }
 
+    #[cfg(test)]
     pub async fn before_new_pipeline(
         &mut self,
         scheduled_start: OffsetDateTime,
         new_pts_offset: Option<PtsOffset>,
         new_subtitle_source: Option<SubtitleSource>,
     ) -> Result<(), ChannelError> {
+        self.before_new_pipeline_with_init(
+            scheduled_start,
+            new_pts_offset,
+            new_subtitle_source,
+            None,
+        )
+        .await
+    }
+
+    /// `init` is the fMP4 init file name the new ffmpeg job writes.
+    pub async fn before_new_pipeline_with_init(
+        &mut self,
+        scheduled_start: OffsetDateTime,
+        new_pts_offset: Option<PtsOffset>,
+        new_subtitle_source: Option<SubtitleSource>,
+        init: Option<String>,
+    ) -> Result<(), ChannelError> {
         self.update().await?;
+        // a job that wrote no segments leaves an init nothing refers to
+        if let Some(previous) = self.current_init.take()
+            && init.as_ref() != Some(&previous)
+            && !self.segment_inits.values().any(|i| *i == previous)
+        {
+            // a job that failed early never wrote its init
+            let path = self.output_folder.join(&previous);
+            match tokio::fs::remove_file(&path).await {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                result => result.io_context("delete the unused init file", &path)?,
+            }
+        }
+        self.current_init = init;
         self.pts_offset = new_pts_offset;
         self.subtitle_source = new_subtitle_source;
         self.pending_discontinuity = true;
@@ -177,7 +239,7 @@ impl PlaylistManager {
 
         // overwrite ffmpeg's playlist with a generated playlist (containing *all* segments)
         if Path::new(&self.generated_playlist_file).exists() {
-            let (generated_playlist, _) = self.generate_playlist(|s| s.to_owned(), None)?;
+            let (generated_playlist, _) = self.generate_playlist(false, None)?;
             write_atomic(
                 &self.output_folder,
                 &self.ffmpeg_playlist_file,
@@ -202,7 +264,7 @@ impl PlaylistManager {
             .io_context("scan the segment folder", &self.output_folder)?;
         while let Ok(Some(entry)) = entries.next_entry().await {
             if let Some(file_name) = entry.file_name().to_str()
-                && file_name.ends_with(".ts")
+                && file_name.ends_with(self.segment_extension)
                 && !self.segments.iter().any(|s| s.path == file_name)
             {
                 new_segment_files.push_back(file_name.to_owned());
@@ -253,6 +315,10 @@ impl PlaylistManager {
 
             let program_date_time = self.last_segment_end;
 
+            if let Some(init) = &self.current_init {
+                self.segment_inits.insert(file.clone(), init.clone());
+            }
+
             self.segments.push_back(Segment {
                 path: file.clone(),
                 program_date_time,
@@ -262,7 +328,7 @@ impl PlaylistManager {
             self.last_segment_end += Duration::from_secs_f64(duration);
             self.last_progress = OffsetDateTime::now_utc();
 
-            let vtt_path = format!("{}.vtt", file.strip_suffix(".ts").unwrap_or(&file));
+            let vtt_path = self.vtt_name(&file);
             let vtt_full = self.output_folder.join(&vtt_path);
             let stream_start = self.pts_offset.unwrap_or_default().duration
                 + Duration::from_secs_f64(
@@ -301,11 +367,16 @@ impl PlaylistManager {
                 let path = self.output_folder.join(&removed.path);
                 remove_trimmed(&path, "delete the trimmed segment").await?;
 
-                let vtt_path = self.output_folder.join(format!(
-                    "{}.vtt",
-                    removed.path.strip_suffix(".ts").unwrap_or(&removed.path)
-                ));
+                let vtt_path = self.output_folder.join(self.vtt_name(&removed.path));
                 remove_trimmed(&vtt_path, "delete the trimmed subtitle segment").await?;
+
+                if let Some(init) = self.segment_inits.remove(&removed.path)
+                    && self.current_init.as_ref() != Some(&init)
+                    && !self.segment_inits.values().any(|i| *i == init)
+                {
+                    let init_path = self.output_folder.join(&init);
+                    remove_trimmed(&init_path, "delete the trimmed init file").await?;
+                }
             }
         }
 
@@ -354,11 +425,8 @@ impl PlaylistManager {
         end: bool,
     ) -> Result<usize, ChannelError> {
         let (mut generated_playlist, playlist_segment_count) =
-            self.generate_playlist(|s| s.to_owned(), max_segments)?;
-        let (mut generated_subtitle_playlist, _) = self.generate_playlist(
-            |s| format!("{}.vtt", s.strip_suffix(".ts").unwrap_or(s)),
-            max_segments,
-        )?;
+            self.generate_playlist(false, max_segments)?;
+        let (mut generated_subtitle_playlist, _) = self.generate_playlist(true, max_segments)?;
 
         if end {
             generated_playlist.push_str("#EXT-X-ENDLIST\n");
@@ -382,14 +450,29 @@ impl PlaylistManager {
         Ok(playlist_segment_count)
     }
 
+    fn vtt_name(&self, segment: &str) -> String {
+        format!(
+            "{}.vtt",
+            segment
+                .strip_suffix(self.segment_extension)
+                .unwrap_or(segment)
+        )
+    }
+
     fn generate_playlist(
         &mut self,
-        path_map: fn(&str) -> String,
+        subtitles: bool,
         max_segments: Option<usize>,
     ) -> Result<(String, usize), ChannelError> {
+        // WebVTT segments have no init
+        let maps = !subtitles && self.is_fmp4();
         let mut playlist = String::new();
         playlist.push_str("#EXTM3U\n");
-        playlist.push_str("#EXT-X-VERSION:6\n");
+        playlist.push_str(if maps {
+            "#EXT-X-VERSION:7\n"
+        } else {
+            "#EXT-X-VERSION:6\n"
+        });
         playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.target_duration));
 
         let (skip, limit) = match max_segments {
@@ -438,16 +521,28 @@ impl PlaylistManager {
             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3][offset_hour sign:mandatory][offset_minute]"
         );
 
+        let mut previous_init = None;
         for segment in self.segments.iter().skip(skip).take(limit) {
             if self.discontinuity_before.contains(&segment.path) {
                 playlist.push_str("#EXT-X-DISCONTINUITY\n");
+            }
+            if maps
+                && let Some(init) = self.segment_inits.get(&segment.path)
+                && previous_init != Some(init)
+            {
+                playlist.push_str(&format!("#EXT-X-MAP:URI=\"{init}\"\n"));
+                previous_init = Some(init);
             }
             playlist.push_str(&format!("#EXTINF:{:.6},\n", segment.duration));
             playlist.push_str(&format!(
                 "#EXT-X-PROGRAM-DATE-TIME:{}\n",
                 segment.program_date_time.format(format)?
             ));
-            playlist.push_str(&format!("{}\n", path_map(&segment.path)));
+            if subtitles {
+                playlist.push_str(&format!("{}\n", self.vtt_name(&segment.path)));
+            } else {
+                playlist.push_str(&format!("{}\n", segment.path));
+            }
         }
 
         Ok((playlist, limit))
@@ -475,7 +570,7 @@ impl PlaylistManager {
                     break;
                 };
 
-                if segment_name.ends_with(".ts")
+                if segment_name.ends_with(self.segment_extension)
                     && let Some(Ok(duration)) = inf.split(',').next().map(str::parse::<f64>)
                 {
                     result.insert(segment_name.to_owned(), duration);
@@ -849,6 +944,111 @@ mod tests {
             !message.contains("channel config"),
             "message blames the channel config: {message}"
         );
+    }
+
+    async fn start_fmp4_job(pm: &mut PlaylistManager, start: OffsetDateTime, init: &str) {
+        tokio::fs::write(pm.output_folder.join(init), b"")
+            .await
+            .unwrap();
+        pm.before_new_pipeline_with_init(start, None, None, Some(init.to_owned()))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fmp4_playlist_maps_each_job_init() {
+        let folder = tempfile::tempdir().unwrap();
+        let now = OffsetDateTime::now_utc();
+        let mut pm = playlist_manager(folder.path(), now).fmp4();
+
+        start_fmp4_job(&mut pm, now, "init000000.mp4").await;
+        write_ffmpeg_segments(folder.path(), &["live000000.m4s", "live000001.m4s"]).await;
+        pm.update().await.unwrap();
+        start_fmp4_job(&mut pm, now + Duration::from_secs(8), "init000001.mp4").await;
+        write_ffmpeg_segments(folder.path(), &["live000002.m4s"]).await;
+        pm.finish().await.unwrap();
+
+        let read = |name: &str| std::fs::read_to_string(folder.path().join(name)).unwrap();
+        let without_times = |playlist: String| -> String {
+            playlist
+                .lines()
+                .filter(|l| !l.starts_with("#EXT-X-PROGRAM-DATE-TIME"))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
+        assert_eq!(
+            without_times(read("live.m3u8")),
+            "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n\
+             #EXT-X-INDEPENDENT-SEGMENTS\n\
+             #EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"init000000.mp4\"\n\
+             #EXTINF:4.000000,\nlive000000.m4s\n#EXTINF:4.000000,\nlive000001.m4s\n\
+             #EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"init000001.mp4\"\n\
+             #EXTINF:4.000000,\nlive000002.m4s\n#EXT-X-ENDLIST\n"
+        );
+        let subtitles = read("live_sub.m3u8");
+        assert!(!subtitles.contains("EXT-X-MAP"), "{subtitles}");
+        assert!(subtitles.contains("#EXT-X-VERSION:6\n"), "{subtitles}");
+        assert_eq!(subtitles.matches("#EXT-X-DISCONTINUITY\n").count(), 2);
+        assert!(subtitles.contains("\nlive000002.vtt\n"), "{subtitles}");
+        assert!(folder.path().join("live000002.vtt").exists());
+    }
+
+    #[tokio::test]
+    async fn fmp4_init_is_deleted_once_no_segment_uses_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let now = OffsetDateTime::now_utc();
+        let mut pm = playlist_manager(folder.path(), OffsetDateTime::UNIX_EPOCH).fmp4();
+        let recent = Segment {
+            program_date_time: now,
+            ..segment("live000002.m4s", 0)
+        };
+        for (segment, init) in [
+            (segment("live000000.m4s", 0), "init000000.mp4"),
+            (segment("live000001.m4s", 4), "init000001.mp4"),
+            (recent, "init000001.mp4"),
+        ] {
+            pm.segment_inits
+                .insert(segment.path.clone(), init.to_owned());
+            pm.segments.push_back(segment);
+        }
+        pm.current_init = Some("init000002.mp4".to_owned());
+        for init in ["init000000.mp4", "init000001.mp4", "init000002.mp4"] {
+            tokio::fs::write(folder.path().join(init), b"")
+                .await
+                .unwrap();
+        }
+
+        pm.update().await.unwrap();
+
+        assert_eq!(pm.segments.len(), 1);
+        assert!(!folder.path().join("init000000.mp4").exists());
+        assert!(folder.path().join("init000001.mp4").exists());
+        assert!(folder.path().join("init000002.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn fmp4_job_without_segments_keeps_the_last_segment_pairing() {
+        let folder = tempfile::tempdir().unwrap();
+        let now = OffsetDateTime::now_utc();
+        let mut pm = playlist_manager(folder.path(), now).fmp4();
+
+        start_fmp4_job(&mut pm, now, "init000000.mp4").await;
+        write_ffmpeg_segments(folder.path(), &["live000000.m4s", "live000001.m4s"]).await;
+        // this job fails before its first segment
+        start_fmp4_job(&mut pm, now + Duration::from_secs(8), "init000001.mp4").await;
+        pm.update().await.unwrap();
+
+        assert_eq!(
+            pm.last_segment(),
+            Some((
+                folder.path().join("live000001.m4s"),
+                Some(folder.path().join("init000000.mp4"))
+            ))
+        );
+
+        start_fmp4_job(&mut pm, now + Duration::from_secs(8), "init000002.mp4").await;
+        assert!(!folder.path().join("init000001.mp4").exists());
+        assert!(folder.path().join("init000000.mp4").exists());
     }
 
     fn cue(start: f64, end: f64, text: &str) -> Cue {

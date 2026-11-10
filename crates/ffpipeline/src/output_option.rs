@@ -27,6 +27,11 @@ pub enum OutputOption {
     /// Output `-ss`: drops packets by dts
     Seek(Duration),
     H264CopyParameterSets,
+    /// `-tag:v`, e.g. `hvc1` or `dvh1` for HEVC in MP4
+    VideoTag(&'static str),
+    /// Lets the MP4 muxer write boxes ffmpeg calls unofficial, such as Dolby Vision's
+    /// `dvcC`/`dvvC`
+    StrictUnofficial,
     TsOffset(Option<PtsOffset>),
     AudioPacketFloor,
     CudaNoAutoScale,
@@ -101,6 +106,8 @@ impl OutputOption {
             OutputOption::H264CopyParameterSets => {
                 args!["-bsf:v", "h264_mp4toannexb,dump_extra=freq=keyframe"]
             }
+            OutputOption::VideoTag(tag) => args!["-tag:v", *tag],
+            OutputOption::StrictUnofficial => args!["-strict", "unofficial"],
             OutputOption::TsOffset(Some(pts_offset)) if pts_offset.duration > Duration::ZERO => {
                 args![
                     "-output_ts_offset",
