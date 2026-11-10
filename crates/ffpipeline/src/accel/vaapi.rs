@@ -155,9 +155,13 @@ fn bgra_upload_check_args(device: &str, size: FrameSize) -> Vec<String> {
         "-f",
         "lavfi",
         "-i",
-        &format!("testsrc2=s={}x{}:d=0.1:r=10", size.width, size.height),
+        // Negotiate BGRA at the source so testsrc2 preserves odd dimensions.
+        &format!(
+            "testsrc2=s={}x{}:d=0.1:r=10,format=bgra,drawbox=w=iw/4:h=ih/4:c=black@0:t=fill:replace=1",
+            size.width, size.height
+        ),
         "-filter_complex",
-        "[0:v]format=bgra,split[a][b];[b]hwupload,hwdownload,format=bgra[c];[a][c]psnr",
+        "[0:v]split[a][b];[b]hwupload,hwdownload,format=bgra[c];[a][c]psnr",
         "-f",
         "null",
         "-",
