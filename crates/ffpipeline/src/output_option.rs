@@ -33,7 +33,11 @@ pub enum OutputOption {
     /// `dvcC`/`dvvC`
     StrictUnofficial,
     TsOffset(Option<PtsOffset>),
-    AudioPacketFloor,
+    /// The one `-bsf:a` chain; ffmpeg keeps only the last `-bsf:a`
+    AudioBitstreamFilters {
+        /// MP4 needs AAC without the ADTS headers a transport stream carries
+        adts_to_asc: bool,
+    },
     CudaNoAutoScale,
     NoDemuxDecodeDelay,
     MovFlagsFastStart,
@@ -115,16 +119,23 @@ impl OutputOption {
                 ]
             }
             OutputOption::TsOffset(_) => Vec::new(),
-            OutputOption::AudioPacketFloor => output_context
-                .pts_offset
-                .and_then(PtsOffset::audio_packet_floor)
-                .map(|floor| {
-                    args![
-                        "-bsf:a",
-                        format!("noise=amount=0:drop='lt(pts*tb,{floor:.9})'"),
-                    ]
-                })
-                .unwrap_or_default(),
+            OutputOption::AudioBitstreamFilters { adts_to_asc } => {
+                let filters: Vec<String> = adts_to_asc
+                    .then(|| "aac_adtstoasc".to_owned())
+                    .into_iter()
+                    .chain(
+                        output_context
+                            .pts_offset
+                            .and_then(PtsOffset::audio_packet_floor)
+                            .map(|floor| format!("noise=amount=0:drop='lt(pts*tb,{floor:.9})'")),
+                    )
+                    .collect();
+                if filters.is_empty() {
+                    Vec::new()
+                } else {
+                    args!["-bsf:a", filters.join(",")]
+                }
+            }
             OutputOption::CudaNoAutoScale => args!["-noautoscale"],
             OutputOption::NoDemuxDecodeDelay => args!["-muxdelay", "0", "-muxpreload", "0"],
             OutputOption::MovFlagsFastStart => {

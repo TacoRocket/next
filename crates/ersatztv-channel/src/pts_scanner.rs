@@ -53,7 +53,7 @@ impl PtsScanner {
                     ChannelError::PtsScannerPathNotUtf8(p.to_string_lossy().into_owned())
                 })?;
 
-            pts_time = self.probe_ends(&path).await?;
+            pts_time = self.probe_ends(None, &path).await?;
         }
 
         Ok(pts_time)
@@ -73,17 +73,21 @@ impl PtsScanner {
                 segment.to_string_lossy().into_owned(),
             ));
         };
-        let utf8 = |path: PathBuf| {
-            path.into_os_string()
-                .into_string()
-                .map_err(|p| ChannelError::PtsScannerPathNotUtf8(p.to_string_lossy().into_owned()))
-        };
-        self.probe_ends(&fmp4_probe_input(&utf8(init)?, &utf8(segment)?))
-            .await
+        let (folder, input) = fmp4_probe_input(&init, &segment)?;
+        self.probe_ends(Some(&folder), &input).await
     }
 
-    async fn probe_ends(&self, input: &str) -> Result<PtsTime, ChannelError> {
-        let output = process::command(&self.ffprobe_path)
+    /// `folder` is ffprobe's working directory, for an input that names files relative to it.
+    async fn probe_ends(
+        &self,
+        folder: Option<&Path>,
+        input: &str,
+    ) -> Result<PtsTime, ChannelError> {
+        let mut command = process::command(&self.ffprobe_path);
+        if let Some(folder) = folder {
+            command.current_dir(folder);
+        }
+        let output = command
             .args([
                 "-v",
                 "-0",
@@ -97,12 +101,55 @@ impl PtsScanner {
             .await
             .io_context("run ffprobe on the last segment", input)?;
 
-        Ok(packet_ends(&String::from_utf8_lossy(&output.stdout)))
+        probe_result(
+            input,
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        )
     }
 }
 
-fn fmp4_probe_input(init: &str, segment: &str) -> String {
-    format!("concat:{init}|{segment}")
+/// A failed probe is an error rather than a zero clock, so callers keep the time they know.
+fn probe_result(
+    input: &str,
+    success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<PtsTime, ChannelError> {
+    if !success {
+        let stderr = String::from_utf8_lossy(stderr);
+        return Err(ChannelError::PtsScannerProbeFailed {
+            input: input.to_owned(),
+            stderr: stderr.trim().chars().take(300).collect(),
+        });
+    }
+    Ok(packet_ends(&String::from_utf8_lossy(stdout)))
+}
+
+/// The folder to run ffprobe in and its `concat:` input. Bare names keep a `|` or drive colon
+/// in the folder's path from being read as protocol syntax; the worker generates both names.
+fn fmp4_probe_input(init: &Path, segment: &Path) -> Result<(PathBuf, String), ChannelError> {
+    let folder = init
+        .parent()
+        .filter(|&folder| segment.parent() == Some(folder));
+    let (Some(folder), Some(init_name), Some(segment_name)) =
+        (folder, init.file_name(), segment.file_name())
+    else {
+        return Err(ChannelError::PtsScannerInitElsewhere {
+            init: init.to_string_lossy().into_owned(),
+            segment: segment.to_string_lossy().into_owned(),
+        });
+    };
+    let (Some(init_name), Some(segment_name)) = (init_name.to_str(), segment_name.to_str()) else {
+        return Err(ChannelError::PtsScannerPathNotUtf8(
+            segment.to_string_lossy().into_owned(),
+        ));
+    };
+    Ok((
+        folder.to_owned(),
+        format!("concat:{init_name}|{segment_name}"),
+    ))
 }
 
 fn packet_ends(output: &str) -> PtsTime {
@@ -142,10 +189,12 @@ mod tests {
 
     #[tokio::test]
     async fn fmp4_probe_reads_the_segment_after_its_own_init() {
-        assert_eq!(
-            fmp4_probe_input("/out/init000001.mp4", "/out/live000007.m4s"),
-            "concat:/out/init000001.mp4|/out/live000007.m4s"
-        );
+        let folder = Path::new("/out|a b");
+        // a `|` in the folder would split an absolute concat: input
+        let init = folder.join("init000001.mp4");
+        let (cwd, input) = fmp4_probe_input(&init, &folder.join("live000007.m4s")).unwrap();
+        assert_eq!(cwd, folder);
+        assert_eq!(input, "concat:init000001.mp4|live000007.m4s");
 
         let scanner = PtsScanner {
             output_folder: PathBuf::from("/out"),
@@ -162,6 +211,33 @@ mod tests {
                 .await,
             Err(ChannelError::PtsScannerMissingInit(_))
         ));
+    }
+
+    #[test]
+    fn fmp4_probe_refuses_an_init_in_another_folder() {
+        assert!(matches!(
+            fmp4_probe_input(
+                Path::new("/old/init000001.mp4"),
+                Path::new("/out/live000007.m4s")
+            ),
+            Err(ChannelError::PtsScannerInitElsewhere { .. })
+        ));
+    }
+
+    #[test]
+    fn failed_probe_is_an_error_not_a_zero_clock() {
+        let packets = b"codec_type=video|pts_time=8.008000|duration_time=0.033367\n";
+        let Err(ChannelError::PtsScannerProbeFailed { input, stderr }) =
+            probe_result("concat:a|b", false, packets, b"  concat:a: No such file\n")
+        else {
+            panic!("a failed probe must be an error");
+        };
+        assert_eq!(input, "concat:a|b");
+        assert_eq!(stderr, "concat:a: No such file");
+
+        let ends = probe_result("concat:a|b", true, packets, b"").unwrap();
+        assert_eq!(ends.duration, Duration::from_micros(8_041_367));
+        assert_eq!(ends.audio_end, None);
     }
 
     #[test]

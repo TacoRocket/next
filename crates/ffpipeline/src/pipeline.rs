@@ -1759,7 +1759,11 @@ impl Pipeline {
                 // apad does not end; stop at the end of video
                 OutputOption::Shortest(None),
                 OutputOption::TsOffset(pts_offset),
-                OutputOption::AudioPacketFloor,
+                OutputOption::AudioBitstreamFilters {
+                    adts_to_asc: final_output_settings.format.is_fmp4()
+                        && audio_codec == AudioCodec::Copy
+                        && audio_stream.codec == "aac",
+                },
                 OutputOption::VideoTrackTimeScale(90_000),
                 OutputOption::FrameRate(output_frame_rate),
                 OutputOption::Format(final_output_settings.format),
@@ -2735,6 +2739,95 @@ mod tests {
         );
         let (_, pipeline) = hevc_copy(fmp4_output(), Some(5));
         assert_eq!(pipeline.copy_decisions().video, Some(CopyDecision::Copy));
+    }
+
+    /// Copies the input's audio, with `codec` and an optional packet floor, and returns every
+    /// `-bsf:a` value in order
+    fn audio_copy_bsfs(
+        output: OutputSettings,
+        codec: &str,
+        floor: bool,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut input = multichannel_ac3_input("main.mkv");
+        for probe in [
+            &mut input.video_input.probe_result,
+            &mut input.audio_input.probe_result,
+        ] {
+            if let crate::probe::ProbeResultStream::Audio(audio) = &mut probe.streams[1] {
+                audio.codec = codec.to_owned();
+            }
+        }
+        let mut output = output;
+        output.audio.copy = Some(crate::output_settings::CopyPolicy::default());
+        if floor {
+            output.pts_offset = Some(PtsOffset {
+                duration: Duration::from_micros(8_041_367),
+                audio_end: Some(Duration::from_micros(8_066_733)),
+            });
+        }
+        let (args, pipeline) = pipeline_args(input, output);
+        assert_eq!(
+            pipeline.copy_decisions().audio,
+            Some(CopyDecision::Copy),
+            "{codec}"
+        );
+        let bsfs = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-bsf:a")
+            .map(|pair| pair[1].clone())
+            .collect();
+        (bsfs, args)
+    }
+
+    #[test]
+    fn fmp4_aac_copy_strips_adts_before_the_packet_floor() {
+        let (bsfs, args) = audio_copy_bsfs(fmp4_output(), "aac", true);
+        assert_eq!(
+            bsfs,
+            ["aac_adtstoasc,noise=amount=0:drop='lt(pts*tb,0.025733000)'"],
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn fmp4_aac_copy_without_floor_strips_adts_alone() {
+        let (bsfs, args) = audio_copy_bsfs(fmp4_output(), "aac", false);
+        assert_eq!(bsfs, ["aac_adtstoasc"], "{args:?}");
+    }
+
+    #[test]
+    fn adts_strip_is_only_for_aac_copied_into_fmp4() {
+        // MPEG-TS keeps ADTS, and only AAC has ADTS framing
+        for (fmp4, codec) in [(false, "aac"), (true, "ac3")] {
+            for floor in [false, true] {
+                let (bsfs, args) = audio_copy_bsfs(
+                    if fmp4 { fmp4_output() } else { stereo_output() },
+                    codec,
+                    floor,
+                );
+                let expected: &[&str] = if floor {
+                    &["noise=amount=0:drop='lt(pts*tb,0.025733000)'"]
+                } else {
+                    &[]
+                };
+                assert_eq!(bsfs, expected, "{codec} {args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fmp4_aac_transcode_has_no_adts_strip() {
+        let mut input = multichannel_ac3_input("main.mkv");
+        if let crate::probe::ProbeResultStream::Audio(audio) =
+            &mut input.audio_input.probe_result.streams[1]
+        {
+            audio.codec = "aac".to_owned();
+        }
+        let (args, _) = pipeline_args(input, fmp4_output());
+        assert!(
+            !args.iter().any(|a| a.contains("aac_adtstoasc")),
+            "{args:?}"
+        );
     }
 
     #[test]
