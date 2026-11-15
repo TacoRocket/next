@@ -84,7 +84,10 @@ required. The filter runs on VAAPI surfaces, avoiding the libplacebo path's
 Vulkan handoffs.
 
 Selection requires known 10-bit input, limited (`tv`) range, BT.2020 primaries,
-BT.2020 non-constant-luminance matrix, PQ transfer, and no Dolby Vision profile.
+BT.2020 non-constant-luminance matrix, and PQ transfer. Dolby Vision profiles 7
+and 8 are accepted because their base layer is HDR10; profile 5 and Dolby Vision
+with an unknown profile are not. This mapper does not use the Dolby Vision
+dynamic metadata, so the picture can differ from libplacebo, which applies it.
 Frames must already be on VAAPI in P010 format; other surface/format paths keep
 the existing mapper. The patched FFmpeg must provide `tonemap_vaapi_lut`. When the option is unset,
 the filter is absent, or the input/output is outside that scope, the existing
