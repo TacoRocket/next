@@ -21,6 +21,9 @@ pub const PLAYLIST_FILE_NAME: &str = "live.m3u8";
 pub const SUBTITLE_PLAYLIST_FILE_NAME: &str = "live_sub.m3u8";
 pub const FFMPEG_PLAYLIST_FILE_NAME: &str = "ffmpeg.m3u8";
 pub const SEGMENT_FILE_TEMPLATE: &str = "live%06d.ts";
+pub const FMP4_SEGMENT_FILE_TEMPLATE: &str = "live%06d.m4s";
+/// One init file per ffmpeg job; the number is not the segment number.
+pub const FMP4_INIT_FILE_TEMPLATE: &str = "init%06d.mp4";
 
 pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 

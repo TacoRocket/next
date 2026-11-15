@@ -16,6 +16,13 @@
       "description": "ffmpeg and ffprobe settings.",
       "$ref": "#/$defs/FfmpegConfig"
     },
+    "hls": {
+      "description": "HLS segment settings. Requires the fork worker.",
+      "$ref": "#/$defs/HlsConfig",
+      "default": {
+        "segment_type": "mpegts"
+      }
+    },
     "normalization": {
       "description": "Output format for audio, video and subtitles.",
       "$ref": "#/$defs/NormalizationConfig"
@@ -398,6 +405,32 @@
           "description": "Vulkan Video.",
           "type": "string",
           "const": "vulkan"
+        }
+      ]
+    },
+    "HlsConfig": {
+      "type": "object",
+      "properties": {
+        "segment_type": {
+          "description": "Container for HLS segments. Requires the fork worker. Default `mpegts`.",
+          "$ref": "#/$defs/HlsSegmentType",
+          "default": "mpegts"
+        }
+      }
+    },
+    "HlsSegmentType": {
+      "title": "HlsSegmentType",
+      "description": "Matches ffmpeg's `-hls_segment_type` values.",
+      "oneOf": [
+        {
+          "description": "MPEG-TS segments (`.ts`).",
+          "type": "string",
+          "const": "mpegts"
+        },
+        {
+          "description": "Fragmented MP4 (CMAF-style) segments (`.m4s`), each ffmpeg job with its own init file\n(`.mp4`). Copied HEVC keeps its Dolby Vision configuration, so players can switch into\nDolby Vision, and Dolby Vision profile 5 may be copied. Requires the fork worker.",
+          "type": "string",
+          "const": "fmp4"
         }
       ]
     },

@@ -86,6 +86,18 @@ pub enum ChannelError {
     #[error("last segment path is not valid UTF-8: {0}")]
     PtsScannerPathNotUtf8(String),
 
+    #[error("no init file is known for the last fMP4 segment {0}")]
+    PtsScannerMissingInit(String),
+
+    #[error("fMP4 segment {segment} and its init {init} are not in the same folder")]
+    PtsScannerInitElsewhere { init: String, segment: String },
+
+    #[error("ffprobe failed on the last segment {input}: {stderr}")]
+    PtsScannerProbeFailed { input: String, stderr: String },
+
+    #[error("ffprobe read no video timestamp from the last segment {0}")]
+    PtsScannerNoVideoTimestamp(String),
+
     #[error("channel {0} terminated after idle timeout")]
     IdleTimeout(String),
 

@@ -27,8 +27,17 @@ pub enum OutputOption {
     /// Output `-ss`: drops packets by dts
     Seek(Duration),
     H264CopyParameterSets,
+    /// `-tag:v`, e.g. `hvc1` or `dvh1` for HEVC in MP4
+    VideoTag(&'static str),
+    /// Lets the MP4 muxer write boxes ffmpeg calls unofficial, such as Dolby Vision's
+    /// `dvcC`/`dvvC`
+    StrictUnofficial,
     TsOffset(Option<PtsOffset>),
-    AudioPacketFloor,
+    /// The one `-bsf:a` chain; ffmpeg keeps only the last `-bsf:a`
+    AudioBitstreamFilters {
+        /// MP4 needs AAC without the ADTS headers a transport stream carries
+        adts_to_asc: bool,
+    },
     CudaNoAutoScale,
     NoDemuxDecodeDelay,
     MovFlagsFastStart,
@@ -101,6 +110,8 @@ impl OutputOption {
             OutputOption::H264CopyParameterSets => {
                 args!["-bsf:v", "h264_mp4toannexb,dump_extra=freq=keyframe"]
             }
+            OutputOption::VideoTag(tag) => args!["-tag:v", *tag],
+            OutputOption::StrictUnofficial => args!["-strict", "unofficial"],
             OutputOption::TsOffset(Some(pts_offset)) if pts_offset.duration > Duration::ZERO => {
                 args![
                     "-output_ts_offset",
@@ -108,16 +119,23 @@ impl OutputOption {
                 ]
             }
             OutputOption::TsOffset(_) => Vec::new(),
-            OutputOption::AudioPacketFloor => output_context
-                .pts_offset
-                .and_then(PtsOffset::audio_packet_floor)
-                .map(|floor| {
-                    args![
-                        "-bsf:a",
-                        format!("noise=amount=0:drop='lt(pts*tb,{floor:.9})'"),
-                    ]
-                })
-                .unwrap_or_default(),
+            OutputOption::AudioBitstreamFilters { adts_to_asc } => {
+                let filters: Vec<String> = adts_to_asc
+                    .then(|| "aac_adtstoasc".to_owned())
+                    .into_iter()
+                    .chain(
+                        output_context
+                            .pts_offset
+                            .and_then(PtsOffset::audio_packet_floor)
+                            .map(|floor| format!("noise=amount=0:drop='lt(pts*tb,{floor:.9})'")),
+                    )
+                    .collect();
+                if filters.is_empty() {
+                    Vec::new()
+                } else {
+                    args!["-bsf:a", filters.join(",")]
+                }
+            }
             OutputOption::CudaNoAutoScale => args!["-noautoscale"],
             OutputOption::NoDemuxDecodeDelay => args!["-muxdelay", "0", "-muxpreload", "0"],
             OutputOption::MovFlagsFastStart => {

@@ -48,6 +48,9 @@ pub struct ChannelConfig {
     /// What plays when nothing is scheduled or an item fails.
     #[serde(default)]
     pub fallback: FallbackConfig,
+    /// HLS segment settings. Requires the fork worker.
+    #[serde(default)]
+    pub hls: HlsConfig,
 
     #[serde(skip)]
     expanded_playout_folder: PathBuf,
@@ -934,6 +937,27 @@ impl From<SubtitleMode> for ffpipeline::output_settings::SubtitleMode {
             SubtitleMode::Convert => ffpipeline::output_settings::SubtitleMode::Convert,
         }
     }
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, Default)]
+pub struct HlsConfig {
+    /// Container for HLS segments. Requires the fork worker. Default `mpegts`.
+    #[serde(default)]
+    pub segment_type: HlsSegmentType,
+}
+
+/// Matches ffmpeg's `-hls_segment_type` values.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[schemars(title = "HlsSegmentType")]
+pub enum HlsSegmentType {
+    /// MPEG-TS segments (`.ts`).
+    #[default]
+    Mpegts,
+    /// Fragmented MP4 (CMAF-style) segments (`.m4s`), each ffmpeg job with its own init file
+    /// (`.mp4`). Copied HEVC keeps its Dolby Vision configuration, so players can switch into
+    /// Dolby Vision, and Dolby Vision profile 5 may be copied. Requires the fork worker.
+    Fmp4,
 }
 
 impl ChannelConfig {
