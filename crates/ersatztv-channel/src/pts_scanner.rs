@@ -110,7 +110,8 @@ impl PtsScanner {
     }
 }
 
-/// A failed probe is an error rather than a zero clock, so callers keep the time they know.
+/// A probe that failed or measured nothing is an error rather than a zero clock, so callers
+/// keep the time they know.
 fn probe_result(
     input: &str,
     success: bool,
@@ -124,7 +125,20 @@ fn probe_result(
             stderr: stderr.trim().chars().take(300).collect(),
         });
     }
-    Ok(packet_ends(&String::from_utf8_lossy(stdout)))
+    // ffprobe also exits 0 on a truncated or empty segment, with no packets
+    let ends = packet_ends(&String::from_utf8_lossy(stdout));
+    if ends.duration.is_zero() {
+        return Err(ChannelError::PtsScannerNoVideoTimestamp(input.to_owned()));
+    }
+    Ok(ends)
+}
+
+/// A scan that failed keeps the time the caller already knows.
+pub fn scanned_or_fallback(
+    scanned: Result<PtsTime, ChannelError>,
+    fallback: Option<PtsTime>,
+) -> Option<PtsTime> {
+    scanned.ok().or(fallback)
 }
 
 /// The folder to run ffprobe in and its `concat:` input. Bare names keep a `|` or drive colon
@@ -238,6 +252,32 @@ mod tests {
         let ends = probe_result("concat:a|b", true, packets, b"").unwrap();
         assert_eq!(ends.duration, Duration::from_micros(8_041_367));
         assert_eq!(ends.audio_end, None);
+    }
+
+    #[test]
+    fn probe_without_a_video_timestamp_keeps_the_known_time() {
+        let known = PtsTime {
+            duration: Duration::from_micros(97_301_000),
+            audio_end: Some(Duration::from_micros(97_288_000)),
+        };
+        // ffprobe exits 0 with no packets on a fragment cut down to its first box
+        for stdout in [
+            &b""[..],
+            b"codec_type=audio|pts_time=8.045400|duration_time=0.021333\n",
+        ] {
+            let scanned = probe_result("concat:a|b", true, stdout, b"");
+            assert!(matches!(
+                scanned,
+                Err(ChannelError::PtsScannerNoVideoTimestamp(_))
+            ));
+            let kept = scanned_or_fallback(scanned, Some(known)).unwrap();
+            assert_eq!(kept.duration, known.duration);
+            assert_eq!(kept.audio_end, known.audio_end);
+        }
+        assert!(
+            scanned_or_fallback(probe_result("concat:a|b", true, b"", b""), None).is_none(),
+            "no fallback and no measurement is no time at all"
+        );
     }
 
     #[test]

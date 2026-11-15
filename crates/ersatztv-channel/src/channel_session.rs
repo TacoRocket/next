@@ -57,7 +57,7 @@ use crate::playlist_manager::{
     PlaylistManager, PlaylistManagerOutputFiles, SHORTFALL_TOLERANCE, SubtitleSource,
 };
 use crate::playout_loader::PlayoutLoader;
-use crate::pts_scanner::{PtsScanner, PtsTime};
+use crate::pts_scanner::{PtsScanner, PtsTime, scanned_or_fallback};
 
 const STDERR_RING_LINES: usize = 2_000;
 const STALL_THRESHOLD: Duration = Duration::from_secs(60);
@@ -1760,10 +1760,7 @@ impl ChannelSession {
     }
 
     async fn last_pts_time(&self, fallback: Option<PtsTime>) -> Option<PtsTime> {
-        match self.scan_last_pts().await {
-            Ok(scanned_pts_time) => Some(scanned_pts_time),
-            Err(_) => fallback,
-        }
+        scanned_or_fallback(self.scan_last_pts().await, fallback)
     }
 
     /// An fMP4 segment can only be read with the init its own ffmpeg job wrote, so the playlist

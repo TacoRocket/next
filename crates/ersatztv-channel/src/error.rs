@@ -95,6 +95,9 @@ pub enum ChannelError {
     #[error("ffprobe failed on the last segment {input}: {stderr}")]
     PtsScannerProbeFailed { input: String, stderr: String },
 
+    #[error("ffprobe read no video timestamp from the last segment {0}")]
+    PtsScannerNoVideoTimestamp(String),
+
     #[error("channel {0} terminated after idle timeout")]
     IdleTimeout(String),
 
